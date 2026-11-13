@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"sync"
 	"time"
@@ -52,10 +53,17 @@ func (srv *Server) Handler() http.Handler {
 	return mux
 }
 
-func clientIP(r *http.Request) string {
+// clientIP returns the caller address. Behind a trusted reverse proxy it
+// takes X-Real-IP, which nginx overwrites with the real client address.
+func (srv *Server) clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
+	}
+	if a, err := netip.ParseAddr(host); err == nil && srv.cfg.IsTrustedProxy(a) {
+		if real, err := netip.ParseAddr(r.Header.Get("X-Real-IP")); err == nil {
+			return real.Unmap().String()
+		}
 	}
 	return host
 }
@@ -225,7 +233,7 @@ func (srv *Server) attach(r *http.Request, req protocol.Request) []byte {
 	if rd.Err != nil || len(rd.B) != 0 {
 		return errorResponse(op.Code, protoErr(protocol.CatProtocol, "malformed ATTACH payload"))
 	}
-	ip := clientIP(r)
+	ip := srv.clientIP(r)
 	user := fb.DPBUser(dpb)
 	alias, target, ok := srv.cfg.ResolveAlias(dbname)
 	if !ok {

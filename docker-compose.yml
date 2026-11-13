@@ -1,7 +1,6 @@
-# fbhttp gateway. Before the first start:
-#   1. cp deploy/config.example.json deploy/config.json and edit the aliases
-#   2. put server.crt and server.key in deploy/certs/
-# Then: docker compose up -d
+# fbhttp gateway, plain HTTP behind an nginx reverse proxy that does TLS.
+# Before the first start: cp deploy/config.example.json deploy/config.json
+# and edit the aliases. Then: docker compose up -d
 services:
   gateway:
     build: ./gateway
@@ -11,18 +10,14 @@ services:
     environment:
       FBHTTP_CONFIG: /etc/fbhttp/config.json
     ports:
-      - "8443:8443"
+      # Only nginx on this host reaches the gateway. If nginx runs on another
+      # host, publish "8080:8080" and firewall the port to that host only.
+      - "127.0.0.1:8080:8080"
     volumes:
       # create_host_path: false makes a missing file fail instead of becoming a directory.
       - type: bind
         source: ./deploy/config.json
         target: /etc/fbhttp/config.json
-        read_only: true
-        bind:
-          create_host_path: false
-      - type: bind
-        source: ./deploy/certs
-        target: /etc/fbhttp/certs
         read_only: true
         bind:
           create_host_path: false

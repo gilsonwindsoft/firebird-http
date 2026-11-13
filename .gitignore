@@ -1,6 +1,4 @@
 deploy/config.json
-deploy/certs/*
-!deploy/certs/.gitkeep
 tests/protocol-fixtures/
 .tmp-prodtest/
 *.dcu

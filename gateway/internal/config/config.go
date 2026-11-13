@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -19,6 +20,10 @@ type Config struct {
 	TLSKey  string `json:"tls_key"`
 	// PlainHTTP serves without TLS. Use only behind a TLS reverse proxy or in tests.
 	PlainHTTP bool `json:"plain_http"`
+	// TrustedProxies lists the addresses (IP or CIDR) of the reverse proxy.
+	// Requests from them take the client address from X-Real-IP.
+	TrustedProxies []string `json:"trusted_proxies"`
+	trusted        []netip.Prefix
 	// Aliases maps the name clients send to the real Firebird connection string.
 	Aliases map[string]string `json:"aliases"`
 
@@ -116,6 +121,10 @@ func applyEnv(c *Config, env func(string) string) error {
 		}
 		c.PlainHTTP = b
 	}
+	// FBHTTP_TRUSTED_PROXIES=127.0.0.1,172.16.0.0/12
+	if v := env("FBHTTP_TRUSTED_PROXIES"); v != "" {
+		c.TrustedProxies = strings.Split(v, ",")
+	}
 	// FBHTTP_ALIASES=name=host:/path.fdb;other=host:/other.fdb
 	if v := env("FBHTTP_ALIASES"); v != "" {
 		c.Aliases = map[string]string{}
@@ -157,6 +166,20 @@ func (c *Config) validate() error {
 			errs = append(errs, fmt.Errorf("%s: must be > 0", k))
 		}
 	}
+	c.trusted = nil
+	for _, v := range c.TrustedProxies {
+		v = strings.TrimSpace(v)
+		p, err := netip.ParsePrefix(v)
+		if err != nil {
+			a, aerr := netip.ParseAddr(v)
+			if aerr != nil {
+				errs = append(errs, fmt.Errorf("trusted_proxies: invalid address %q", v))
+				continue
+			}
+			p = netip.PrefixFrom(a, a.BitLen())
+		}
+		c.trusted = append(c.trusted, p.Masked())
+	}
 	if c.MaxInlineBlob < 0 {
 		errs = append(errs, errors.New("max_inline_blob: must be >= 0"))
 	}
@@ -164,6 +187,17 @@ func (c *Config) validate() error {
 		return fmt.Errorf("invalid configuration: %w", errors.Join(errs...))
 	}
 	return nil
+}
+
+// IsTrustedProxy reports whether addr belongs to trusted_proxies.
+func (c *Config) IsTrustedProxy(addr netip.Addr) bool {
+	addr = addr.Unmap()
+	for _, p := range c.trusted {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 // ResolveAlias maps the database string a client sent to a published target.

@@ -1,8 +1,7 @@
 {
-  "listen": ":8443",
-  "tls_cert": "/etc/fbhttp/certs/server.crt",
-  "tls_key": "/etc/fbhttp/certs/server.key",
-  "plain_http": false,
+  "listen": ":8080",
+  "plain_http": true,
+  "trusted_proxies": ["127.0.0.1", "172.16.0.0/12"],
   "aliases": {
     "erp": "firebird-host:/firebird/data/erp.fdb"
   },

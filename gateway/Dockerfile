@@ -16,7 +16,7 @@ RUN apt-get update \
  && useradd --system --uid 10001 --no-create-home fbhttp
 COPY --from=build /out/fbhttp-gateway /usr/local/bin/fbhttp-gateway
 USER fbhttp
-EXPOSE 8443
+EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
   CMD ["fbhttp-gateway", "-healthcheck"]
 ENTRYPOINT ["fbhttp-gateway"]

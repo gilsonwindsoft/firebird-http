@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,5 +52,23 @@ func TestResolveAlias(t *testing.T) {
 		if _, _, ok := c.ResolveAlias(in); ok != want {
 			t.Errorf("%q: got %v", in, ok)
 		}
+	}
+}
+
+func TestTrustedProxies(t *testing.T) {
+	c, err := Load("", envOf(map[string]string{"FBHTTP_PLAIN_HTTP": "1", "FBHTTP_ALIASES": "a=fb:/a.fdb",
+		"FBHTTP_TRUSTED_PROXIES": "127.0.0.1, 172.16.0.0/12"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for in, want := range map[string]bool{"127.0.0.1": true, "::ffff:127.0.0.1": true, "172.20.0.1": true,
+		"127.0.0.2": false, "10.0.0.1": false} {
+		if got := c.IsTrustedProxy(netip.MustParseAddr(in)); got != want {
+			t.Errorf("%s: got %v", in, got)
+		}
+	}
+	if _, err := Load("", envOf(map[string]string{"FBHTTP_PLAIN_HTTP": "1", "FBHTTP_ALIASES": "a=fb:/a.fdb",
+		"FBHTTP_TRUSTED_PROXIES": "nginx"})); err == nil || !strings.Contains(err.Error(), "trusted_proxies") {
+		t.Fatalf("got %v", err)
 	}
 }

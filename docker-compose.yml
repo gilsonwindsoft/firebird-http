@@ -22,9 +22,9 @@ services:
       FBHTTP_MAX_SESSIONS_PER_IP: ${FBHTTP_MAX_SESSIONS_PER_IP:-50}
       FBHTTP_IDLE_TIMEOUT_SECONDS: ${FBHTTP_IDLE_TIMEOUT_SECONDS:-1800}
     ports:
-      # Only nginx on this host reaches the gateway. If nginx runs on another
-      # host, publish "8080:8080" and firewall the port to that host only.
-      - "127.0.0.1:8080:8080"
+      # Address the port is published on. 127.0.0.1: nginx installed on this
+      # host. 172.17.0.1: nginx in a container that reaches the host by docker0.
+      - "${FBHTTP_BIND:-127.0.0.1}:8080:8080"
     # Time to roll back open transactions after SIGTERM (shutdown_grace_seconds + margin).
     stop_grace_period: 40s
     read_only: true

@@ -10,7 +10,7 @@ DLL Windows 32 bits que o driver dbExpress da Devart carrega como `fbclient.dll`
 A biblioteca SHALL ser uma DLL Windows 32 bits que exporta, com o mesmo nome, a mesma assinatura e a convenção `stdcall`, todas as funções da API do Firebird que o driver dbExpress da Devart chama. Uma aplicação SHALL funcionar só com a troca de `VendorLib` e de `Database`, sem outra mudança de código ou de driver. A biblioteca SHALL usar um nome próprio (`ws-fbclient.dll`) e SHALL NOT carregar nem depender do `fbclient.dll`, para conviver com o cliente nativo na mesma pasta e no mesmo processo.
 
 #### Scenario: Abrir conexão
-- **WHEN** a aplicação configura `VendorLib = ws-fbclient.dll` e `Database` com um alias publicado no gateway, e abre a `TSQLConnection`
+- **WHEN** a aplicação configura `VendorLib = ws-fbclient.dll` e `Database` com um banco do servidor configurado no gateway, e abre a `TSQLConnection`
 - **THEN** a conexão abre sem erro e a `ws-fbclient.dll` não carrega o `fbclient.dll`
 
 #### Scenario: Convivência com o cliente nativo

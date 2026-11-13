@@ -1,6 +1,7 @@
-# fbhttp gateway, plain HTTP behind an nginx reverse proxy that does TLS.
-# Before the first start: cp deploy/config.example.json deploy/config.json
-# and edit the aliases. Then: docker compose up -d
+# fbhttp gateway, plain HTTP behind a reverse proxy that does TLS (nginx, or
+# the Coolify proxy). Configuration comes from FBHTTP_* variables: set them in
+# a .env file next to this file (see .env.example) or in the Coolify UI.
+# Then: docker compose up -d
 services:
   gateway:
     build: ./gateway
@@ -8,19 +9,22 @@ services:
     image: fbhttp-gateway:latest
     restart: unless-stopped
     environment:
-      FBHTTP_CONFIG: /etc/fbhttp/config.json
+      FBHTTP_PLAIN_HTTP: "true"
+      FBHTTP_LISTEN: ":8080"
+      # Firebird server ("host" or "host/port"). The database the client sends
+      # (path or databases.conf alias) is opened there; its host is ignored.
+      FBHTTP_FIREBIRD_HOST: ${FBHTTP_FIREBIRD_HOST:?set FBHTTP_FIREBIRD_HOST}
+      # Optional names that go elsewhere: name=host:/path.fdb;other=host:alias
+      FBHTTP_ALIASES: ${FBHTTP_ALIASES:-}
+      # Reverse proxy addresses allowed to send X-Real-IP.
+      FBHTTP_TRUSTED_PROXIES: ${FBHTTP_TRUSTED_PROXIES:-127.0.0.1,172.16.0.0/12,10.0.0.0/8}
+      FBHTTP_MAX_SESSIONS: ${FBHTTP_MAX_SESSIONS:-500}
+      FBHTTP_MAX_SESSIONS_PER_IP: ${FBHTTP_MAX_SESSIONS_PER_IP:-50}
+      FBHTTP_IDLE_TIMEOUT_SECONDS: ${FBHTTP_IDLE_TIMEOUT_SECONDS:-1800}
     ports:
       # Only nginx on this host reaches the gateway. If nginx runs on another
       # host, publish "8080:8080" and firewall the port to that host only.
       - "127.0.0.1:8080:8080"
-    volumes:
-      # create_host_path: false makes a missing file fail instead of becoming a directory.
-      - type: bind
-        source: ./deploy/config.json
-        target: /etc/fbhttp/config.json
-        read_only: true
-        bind:
-          create_host_path: false
     # Time to roll back open transactions after SIGTERM (shutdown_grace_seconds + margin).
     stop_grace_period: 40s
     read_only: true

@@ -16,23 +16,25 @@ estação (ws-fbclient.dll) --HTTPS--> nginx :443 --HTTP--> gateway 127.0.0.1:80
 
 ```bash
 git clone <este repositório> fbhttp && cd fbhttp
-cp deploy/config.example.json deploy/config.json
+cp .env.example .env
+nano .env                  # FBHTTP_FIREBIRD_HOST = servidor Firebird
 ```
 
-Edite `deploy/config.json`:
+A configuração vem de variáveis de ambiente, num `.env` ao lado do `docker-compose.yml` ou na tela de variáveis do Coolify:
 
-| Campo | Uso |
+| Variável | Uso |
 |---|---|
-| `aliases` | Nome publicado → string de conexão real (`host:/caminho/banco.fdb` ou alias do `databases.conf`). Os clientes só conseguem abrir os nomes desta lista. |
-| `listen` | Endereço e porta no container. Mantenha `:8080`, que é a porta do `docker-compose.yml`. |
-| `plain_http` | Mantenha `true`. O TLS fica no nginx. |
-| `trusted_proxies` | Endereços (IP ou CIDR) de onde chegam as requisições do nginx. Só delas o gateway aceita o cabeçalho `X-Real-IP` com o IP real da estação. O padrão (`127.0.0.1`, `172.16.0.0/12`) cobre nginx no mesmo host, que chega ao container pela rede do Docker. |
-| `max_sessions`, `max_sessions_per_ip` | Limites de conexões simultâneas. O limite por IP usa o IP real da estação. |
-| `idle_timeout_seconds` | Sessão sem atividade é encerrada com rollback (padrão 1800). |
-| `max_fetch_rows`, `max_inline_blob`, `max_body_bytes` | Limites de lote, BLOB embutido e tamanho da requisição. |
-| `set_bind` | Enviado como `isc_dpb_set_bind` (Firebird 4+). Padrão: `int128 to legacy;decfloat to legacy;time zone to legacy`, para que FB 4/5 devolvam os tipos de FB 3 (`BIGINT`, `DOUBLE`, `TIMESTAMP`) que drivers antigos entendem. `""` desliga. Se o cliente mandar o próprio `set_bind`, o dele vale. |
+| `FBHTTP_FIREBIRD_HOST` | **Obrigatória.** Servidor Firebird (`host` ou `host/porta`). O `Database` que a estação manda (caminho ou alias do `databases.conf`) é aberto nesse servidor. O host que vem na frente (`localhost:`, `servidor/3050:`) é ignorado. Pedidos com um segundo host, UNC (`\\host\...`) ou URL (`inet://`) são recusados. |
+| `FBHTTP_ALIASES` | Opcional. Nomes que vão para outro servidor ou caminho, separados por `;`: `nome=host:/caminho/banco.fdb`. Têm prioridade sobre `FBHTTP_FIREBIRD_HOST`. |
+| `FBHTTP_TRUSTED_PROXIES` | Endereços (IP ou CIDR, separados por vírgula) do proxy reverso. Só deles o gateway aceita o cabeçalho `X-Real-IP` com o IP real da estação. Padrão: `127.0.0.1,172.16.0.0/12,10.0.0.0/8`, que cobre nginx no mesmo host e o proxy do Coolify (redes do Docker). |
+| `FBHTTP_MAX_SESSIONS`, `FBHTTP_MAX_SESSIONS_PER_IP` | Limites de conexões simultâneas (padrão 500 e 50). O limite por IP usa o IP real da estação. |
+| `FBHTTP_IDLE_TIMEOUT_SECONDS` | Sessão sem atividade é encerrada com rollback (padrão 1800). |
+| `FBHTTP_MAX_FETCH_ROWS`, `FBHTTP_MAX_INLINE_BLOB`, `FBHTTP_MAX_BODY_BYTES` | Limites de lote (5000), BLOB embutido (1 MB) e tamanho da requisição (64 MB). Para usar, acrescente no `environment` do `docker-compose.yml`. |
+| `FBHTTP_SET_BIND` | Enviado como `isc_dpb_set_bind` (Firebird 4+). Padrão: `int128 to legacy;decfloat to legacy;time zone to legacy`, para que FB 4/5 devolvam os tipos de FB 3 (`BIGINT`, `DOUBLE`, `TIMESTAMP`) que drivers antigos entendem. `none` desliga. Para usar, acrescente no `environment`. |
 
-Qualquer campo pode ser sobrescrito por variável `FBHTTP_*` no `docker-compose.yml` (ex.: `FBHTTP_ALIASES: "erp=fbserver:/data/erp.fdb;teste=fbserver:/data/teste.fdb"`, `FBHTTP_TRUSTED_PROXIES: "127.0.0.1,172.16.0.0/12"`).
+Restrinja no Firebird o que pode ser aberto. No `firebird.conf`, use `DatabaseAccess = Restrict /caminho/dos/dados` (ou `None`, para aceitar só aliases do `databases.conf`). Sem isso, um usuário com senha válida pode abrir qualquer `.fdb` que o servidor Firebird alcança.
+
+`FBHTTP_PLAIN_HTTP=true` e `FBHTTP_LISTEN=:8080` já vêm fixos no `docker-compose.yml`: o TLS fica no proxy reverso.
 
 Se o Firebird estiver no mesmo host do Docker, use o IP do host ou `host.docker.internal` (adicione `extra_hosts: ["host.docker.internal:host-gateway"]` ao serviço).
 
@@ -58,12 +60,21 @@ Pontos que o exemplo já resolve e que não podem faltar numa configuração pr�
 
 - `proxy_set_header X-Real-IP $remote_addr`: sem ele, todas as estações parecem vir do nginx e dividem o mesmo `max_sessions_per_ip`.
 - `proxy_read_timeout 1800s`: um SQL demorado mantém a requisição aberta. Com o padrão do nginx (60 s), o cliente recebe 504.
-- `client_max_body_size 64m`: igual a `max_body_bytes`.
+- `client_max_body_size 64m`: igual a `FBHTTP_MAX_BODY_BYTES`.
 - `proxy_http_version 1.1` e `Connection ""`: mantêm a conexão com o gateway aberta entre requisições.
 
-Se o nginx estiver em outro host, publique a porta como `"8080:8080"` no `docker-compose.yml`, libere no firewall só para o IP do nginx e coloque esse IP em `trusted_proxies`.
+Se o nginx estiver em outro host, publique a porta como `"8080:8080"` no `docker-compose.yml`, libere no firewall só para o IP do nginx e coloque esse IP em `FBHTTP_TRUSTED_PROXIES`.
 
 Teste a partir de outra máquina: `curl -i https://gateway.exemplo.com.br/healthz` deve responder `204`.
+
+## Coolify
+
+1. Crie um recurso do tipo **Docker Compose** apontando para este repositório (branch `main`, arquivo `docker-compose.yml`).
+2. Em **Environment Variables**, defina `FBHTTP_FIREBIRD_HOST` (e as opcionais, se precisar).
+3. No serviço `gateway`, defina o domínio com a porta do container: `https://gateway.exemplo.com.br:8080`. O proxy do Coolify cuida do certificado e encaminha para a porta 8080.
+4. Faça o deploy. O container deve ficar "healthy" e `https://gateway.exemplo.com.br/healthz` deve responder `204`.
+
+O proxy do Coolify (Traefik) já envia `X-Real-IP` e não corta respostas demoradas por padrão. Se houver um nginx na frente do Coolify, ele precisa das mesmas configurações da seção nginx acima.
 
 ## Operação
 

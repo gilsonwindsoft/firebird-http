@@ -40,10 +40,18 @@ O gateway SHALL encerrar sessões sem atividade além do tempo configurado. Ao e
 - **THEN** o gateway faz rollback, fecha a conexão Firebird e responde "sessão inválida" a requisições futuras com aquele identificador
 
 ### Requirement: Autenticação e autorização
-O gateway SHALL aceitar só aliases de banco publicados na configuração e SHALL NOT aceitar caminhos de arquivo enviados pelo cliente. Usuário e senha SHALL ser validados pelo próprio Firebird ao abrir a conexão. Toda requisição depois da criação SHALL exigir um token de sessão imprevisível.
+O gateway SHALL abrir os bancos só no servidor Firebird configurado (`firebird_host`) ou nos destinos dos aliases configurados, e SHALL NOT conectar a um servidor indicado pelo cliente. O host que o cliente manda antes do primeiro `:` SHALL ser ignorado. Usuário e senha SHALL ser validados pelo próprio Firebird ao abrir a conexão. Toda requisição depois da criação SHALL exigir um token de sessão imprevisível.
 
-#### Scenario: Alias não publicado
-- **WHEN** a biblioteca pede uma sessão para um alias ou caminho que não está na configuração
+#### Scenario: Banco no servidor configurado
+- **WHEN** a biblioteca pede uma sessão para `localhost:alias_do_servidor` e o gateway tem `firebird_host` configurado
+- **THEN** o gateway abre `alias_do_servidor` no `firebird_host`
+
+#### Scenario: Outro servidor pedido pelo cliente
+- **WHEN** a biblioteca pede uma sessão com um segundo host (`a:outro:/banco.fdb`), caminho UNC ou URL (`inet://`)
+- **THEN** o gateway recusa a sessão sem abrir conexão Firebird
+
+#### Scenario: Sem servidor configurado
+- **WHEN** o gateway não tem `firebird_host` e o nome pedido não está nos aliases
 - **THEN** o gateway recusa a sessão sem abrir conexão Firebird
 
 #### Scenario: Senha errada

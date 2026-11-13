@@ -237,8 +237,8 @@ func (srv *Server) attach(r *http.Request, req protocol.Request) []byte {
 	user := fb.DPBUser(dpb)
 	alias, target, ok := srv.cfg.ResolveAlias(dbname)
 	if !ok {
-		srv.log.Warn("attach refused", "reason", "alias not published", "user", user, "ip", ip)
-		return errorResponse(op.Code, protoErr(protocol.CatSession, "fbhttp: database %q is not published by this gateway", dbname))
+		srv.log.Warn("attach refused", "reason", "database not allowed", "user", user, "ip", ip)
+		return errorResponse(op.Code, protoErr(protocol.CatSession, "fbhttp: database %q is not allowed by this gateway", dbname))
 	}
 	clean, ok := fb.SanitizeDPB(dpb)
 	if !ok {

@@ -74,7 +74,7 @@ O gateway mantém, para cada sessão, uma tabela que liga IDs opacos de 32 bits 
 - **Gravação de BLOB**: a DLL acumula os dados de `isc_put_segment` e envia no `isc_close_blob`. Ela também envia um bloco quando o buffer passa de 1 MB.
 
 ### D9. Destino da conexão e configuração
-O driver passa `Database` (por exemplo `servidor:alias` ou `alias`) para `isc_attach_database`. A DLL envia essa string sem mudança. O gateway primeiro tenta casar exatamente com os aliases publicados. Depois tenta o texto após o primeiro `:`. O gateway nunca aceita um caminho de arquivo que não esteja na lista de aliases.
+O driver passa `Database` (por exemplo `servidor:alias` ou `alias`) para `isc_attach_database`. A DLL envia essa string sem mudança. O gateway primeiro tenta casar exatamente com os aliases configurados (opcionais). Depois tenta o texto após o primeiro `:`. Se nada casar, abre esse texto (caminho ou alias do `databases.conf`) no servidor fixo `firebird_host`, ignorando o host que o cliente mandou. Um segundo host, caminho UNC ou URL (`inet://`) é recusado, para que o gateway nunca conecte a um servidor escolhido pelo cliente. O que pode ser aberto no servidor fica a cargo do Firebird (`DatabaseAccess` no `firebird.conf`). Assim não é preciso manter uma lista de bancos no gateway.
 
 A URL do gateway, opções de TLS, timeouts e tamanho do lote vêm do `ws-fbclient.ini`, na mesma pasta da DLL. Cada item pode ser sobrescrito por uma variável de ambiente `FBHTTP_*`. Usuário, senha, role e charset vêm do DPB que o driver já monta. O gateway repassa o DPB para `isc_attach_database` depois de remover tags que se referem ao sistema de arquivos local. O gateway usa o cliente do Firebird 4, e com ele o FB 4/5 devolve tipos novos (`INT128` em `SUM(NUMERIC)`, `DECFLOAT`, `TIMESTAMP WITH TIME ZONE` em `CURRENT_TIMESTAMP`) que o driver Devart antigo não lê. Por isso o gateway acrescenta `isc_dpb_set_bind` = `int128 to legacy;decfloat to legacy;time zone to legacy` quando o cliente não manda o seu. Esse é o mesmo resultado que o cliente nativo da aplicação recebe. A opção `set_bind` permite mudar ou desligar.
 
@@ -95,14 +95,14 @@ A sessão começa em `isc_attach_database` e termina em `isc_detach_database`. O
 - [Latência em muitas consultas pequenas, por exemplo telas que fazem 50 buscas de uma linha] → Lotes e chamadas adiadas removem quase todas as idas e voltas extras, mas não a ida e volta de cada consulta. Medir com a aplicação real (tarefa 7.3) e documentar o custo esperado. Manter o gateway perto do banco.
 - [Comportamento diferente do nativo em caminhos raros da API] → O proxy de log define os caminhos a suportar. Um teste de comparação roda o mesmo script pelo cliente nativo e pelo HTTP e compara os resultados byte a byte.
 - [Bugs de memória no código de `XSQLDA` derrubam a aplicação] → Um único módulo escreve no `XSQLDA`, com checagem de limites, barreira de exceção em cada export e teste com FastMM em modo full debug.
-- [Gateway exposto à internet] → TLS obrigatório. Só aliases são aceitos. Token aleatório de 128 bits. Limites de sessões e de tamanho de corpo. Senhas fora do log. Um proxy reverso (nginx) na frente do gateway é opcional para limitar taxa.
+- [Gateway exposto à internet] → TLS obrigatório (no proxy reverso). Só o servidor Firebird configurado é alcançável; `DatabaseAccess` restringe os arquivos. Token aleatório de 128 bits. Limites de sessões e de tamanho de corpo. Senhas fora do log. Um proxy reverso (nginx) na frente do gateway é opcional para limitar taxa.
 - [Codificação de texto do gateway ou de `fb_interpret` diferente do charset do cliente] → O gateway conecta com o mesmo `isc_dpb_lc_ctype` que o cliente enviou e devolve os bytes crus das mensagens.
 - [Chamadas cgo bloqueiam threads do sistema] → O número de sessões é limitado. Cada chamada bloqueada ocupa só uma thread, e o Go lida com milhares de threads.
 
 ## Migration Plan
 
-1. Subir o gateway com `docker compose up -d` perto do Firebird. Publicar os aliases e configurar TLS.
-2. Numa estação, copiar `ws-fbclient.dll` e `ws-fbclient.ini` para a pasta da aplicação. Configurar `VendorLib = ws-fbclient.dll` e `Database = alias`.
+1. Subir o gateway com `docker compose up -d` perto do Firebird. Configurar `FBHTTP_FIREBIRD_HOST` e o TLS no proxy reverso.
+2. Numa estação, copiar `ws-fbclient.dll` e `ws-fbclient.ini` para a pasta da aplicação. Configurar `VendorLib = ws-fbclient.dll`. O `Database` pode continuar o mesmo.
 3. Rodar a aplicação em piloto. Rollback: voltar `VendorLib` para `fbclient.dll` e o `Database` original. A aplicação não tem outra mudança, então o rollback é imediato.
 
 ## Open Questions

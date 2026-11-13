@@ -17,7 +17,8 @@ O nome `ws-fbclient.dll` permite que ela fique na mesma máquina que o `fbclient
 | Pasta | Conteúdo |
 |---|---|
 | `gateway/` | Código do gateway e `Dockerfile` |
-| `deploy/` | `config.example.json` (gateway) e `nginx.example.conf` |
+| `deploy/` | `nginx.example.conf` |
+| `.env.example` | Variáveis do gateway (`FBHTTP_FIREBIRD_HOST` e opcionais) |
 | `client/src/` | Código da `ws-fbclient.dll` |
 | `client/ws-fbclient/` | Projeto, `build.bat` e `ws-fbclient.example.ini` |
 | `client/tests/` | Testes DUnitX da DLL |
@@ -31,22 +32,13 @@ No servidor Linux, com Docker e nginx:
 
 ```bash
 git clone <este repositório> fbhttp && cd fbhttp
-cp deploy/config.example.json deploy/config.json
-nano deploy/config.json        # publique os bancos em "aliases"
+cp .env.example .env
+nano .env                      # FBHTTP_FIREBIRD_HOST = servidor Firebird
 docker compose up -d --build
 docker compose ps              # STATUS "healthy"
 ```
 
-Em `aliases`, cada nome publicado aponta para um banco real:
-
-```json
-"aliases": {
-  "erp": "10.0.0.5:/firebird/data/erp.fdb",
-  "erp-teste": "10.0.0.5:erp_teste"
-}
-```
-
-As estações só conseguem abrir os nomes desta lista. Caminhos de arquivo enviados pela estação são recusados.
+`FBHTTP_FIREBIRD_HOST` é o servidor Firebird visto do container (`10.0.0.5` ou `10.0.0.5/3050`). O gateway abre nele o banco que a estação pede, seja caminho ou alias do `databases.conf`, e ignora o host que a estação manda na frente. Para limitar o que pode ser aberto, use `DatabaseAccess = Restrict /caminho/dos/dados` no `firebird.conf`.
 
 Configure o nginx a partir de `deploy/nginx.example.conf`: troque o `server_name` e os caminhos do certificado, depois rode `nginx -t && systemctl reload nginx`.
 
@@ -56,7 +48,9 @@ Confira de outra máquina:
 curl -i https://gateway.exemplo.com.br/healthz    # HTTP/2 204
 ```
 
-Detalhes (todos os campos de configuração, proxy em outro host, atualização, logs): [docs/deploy.md](docs/deploy.md).
+No Coolify, em vez do `.env`, defina `FBHTTP_FIREBIRD_HOST` na tela de variáveis e o domínio do serviço `gateway` com a porta 8080. O proxy do Coolify faz o TLS no lugar do nginx.
+
+Detalhes (todas as variáveis, nginx, Coolify, atualização, logs): [docs/deploy.md](docs/deploy.md).
 
 ## 2. Compilar a DLL
 
@@ -111,15 +105,15 @@ Isso vale só para essa pasta. O `.ini` continua com o nome `ws-fbclient.ini`, m
 
 **No IBExpert**, no registro do banco, preencha "Client library file" com o caminho completo da `ws-fbclient.dll`.
 
-### 3.3 Ajuste o `Database`
+### 3.3 O `Database`
 
-No `Database` da conexão, use o **nome publicado** no gateway, não o caminho do arquivo. O gateway aceita o nome sozinho ou com um prefixo de servidor, que ele ignora:
+O `Database` pode continuar como está hoje. O gateway descarta o servidor que vem na frente e abre o resto no `FBHTTP_FIREBIRD_HOST`:
 
-```ini
-Database=erp
-; ou, mantendo o formato antigo:
-Database=localhost:erp
-```
+| `Database` na estação | Aberto pelo gateway |
+|---|---|
+| `localhost:ws-servico-trunk` | `FIREBIRD_HOST:ws-servico-trunk` (alias do `databases.conf`) |
+| `servidor/3050:/dados/erp.fdb` | `FIREBIRD_HOST:/dados/erp.fdb` |
+| `erp` (nome em `FBHTTP_ALIASES`) | o destino configurado para `erp` |
 
 Usuário, senha, role e charset continuam os mesmos do Firebird. O gateway os repassa ao servidor.
 
@@ -132,7 +126,8 @@ Abra a aplicação. No servidor, `docker compose logs -f` deve mostrar `session 
 | `ws-fbclient: gateway URL not configured` | O `ws-fbclient.ini` não está na pasta da DLL ou não tem `url=`. |
 | Erro de rede ou "conexão perdida" | URL errada, nginx parado ou porta 443 bloqueada. Teste o `/healthz` no navegador da estação. |
 | Erro de certificado | O certificado do nginx não é confiável para o Windows. Use um certificado válido. |
-| Banco não encontrado / alias não publicado | O `Database` não bate com nenhum nome de `aliases`. |
+| `database ... is not allowed by this gateway` | O `Database` tem um segundo host, caminho UNC ou URL (`inet://`). Use `servidor:caminho` ou `servidor:alias`. |
+| Banco não encontrado (erro do Firebird) | O caminho ou alias não existe no `FBHTTP_FIREBIRD_HOST`, ou o `DatabaseAccess` do Firebird não permite. |
 | `not supported by ws-fbclient` | A aplicação chamou uma função que a DLL não implementa (ver Limitações). |
 
 Para diagnóstico na estação, defina a variável de ambiente `FBHTTP_DEBUG_LOG=C:\temp\ws-fbclient.log` antes de abrir a aplicação. O log mostra as chamadas e os tempos, sem dados nem senhas.

@@ -1,6 +1,6 @@
-deploy/config.json
 tests/protocol-fixtures/
 .tmp-prodtest/
 *.dcu
 *.dll
 *.log
+.env

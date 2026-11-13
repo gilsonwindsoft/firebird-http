@@ -88,7 +88,7 @@ func run(cfg *config.Config, log *slog.Logger) error {
 		}
 	}()
 	log.Info("gateway started", "listen", cfg.Listen, "tls", !cfg.PlainHTTP, "protocol", protocol.Version,
-		"fbclient", fb.ClientVersion(), "aliases", len(cfg.Aliases))
+		"fbclient", fb.ClientVersion(), "aliases", len(cfg.Aliases), "firebird_host", cfg.FirebirdHost)
 
 	select {
 	case err := <-errc:

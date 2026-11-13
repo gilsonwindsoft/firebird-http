@@ -19,8 +19,40 @@ func TestTLSWithoutCertificate(t *testing.T) {
 
 func TestNoAliases(t *testing.T) {
 	_, err := Load("", envOf(map[string]string{"FBHTTP_PLAIN_HTTP": "true"}))
-	if err == nil || !strings.Contains(err.Error(), "aliases") {
+	if err == nil || !strings.Contains(err.Error(), "firebird_host or aliases") {
 		t.Fatalf("got %v", err)
+	}
+	if _, err := Load("", envOf(map[string]string{"FBHTTP_PLAIN_HTTP": "true", "FBHTTP_FIREBIRD_HOST": "10.0.0.5/3050"})); err != nil {
+		t.Fatalf("firebird_host only: %v", err)
+	}
+	for _, bad := range []string{"10.0.0.5:/db", "/db/x.fdb", "a b"} {
+		if _, err := Load("", envOf(map[string]string{"FBHTTP_PLAIN_HTTP": "true", "FBHTTP_FIREBIRD_HOST": bad})); err == nil {
+			t.Errorf("%q: expected error", bad)
+		}
+	}
+}
+
+func TestResolveFirebirdHost(t *testing.T) {
+	c := &Config{FirebirdHost: "fb", Aliases: map[string]string{"erp": "other:/db/erp.fdb"}}
+	for in, want := range map[string]string{
+		"erp":                  "other:/db/erp.fdb",
+		"localhost:erp":        "other:/db/erp.fdb",
+		"ws-servico-trunk":     "fb:ws-servico-trunk",
+		"localhost:ws-servico": "fb:ws-servico",
+		"srv/3050:/data/x.fdb": "fb:/data/x.fdb",
+		"/data/x.fdb":          "fb:/data/x.fdb",
+		`C:\data\x.fdb`:        `fb:C:\data\x.fdb`,
+		`srv:C:\data\x.fdb`:    `fb:C:\data\x.fdb`,
+		"a:evil:/db.fdb":       "",
+		"inet://evil/db.fdb":   "",
+		`\\evil\share\x.fdb`:   "",
+		"srv:":                 "",
+		"":                     "",
+	} {
+		_, got, ok := c.ResolveAlias(in)
+		if (want == "") == ok || got != want {
+			t.Errorf("%q: got %q %v want %q", in, got, ok, want)
+		}
 	}
 }
 

@@ -183,8 +183,21 @@ func TestAliasNotPublished(t *testing.T) {
 			t.Fatalf("%s: got %v", db, err)
 		}
 	}
-	if !strings.Contains(e.logs.String(), "alias not published") {
+	if !strings.Contains(e.logs.String(), "database not allowed") {
 		t.Fatal("refusal not logged")
+	}
+}
+
+// With firebird_host, the database part the client sends is opened on that
+// host; the client's host is ignored and a second host is refused.
+func TestAttachFirebirdHost(t *testing.T) {
+	host, path, _ := strings.Cut(testDB, ":")
+	e := newEnv(t, func(c *config.Config) { c.Aliases = nil; c.FirebirdHost = host })
+	if _, err := attachClient(t, e.http.URL, "localhost:"+path, testUser, testPassword); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := attachClient(t, e.http.URL, "x:evil:"+path, testUser, testPassword); err == nil || err.Category != protocol.CatSession {
+		t.Fatalf("second host: got %v", err)
 	}
 }
 

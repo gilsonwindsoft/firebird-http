@@ -24,6 +24,9 @@ type Config struct {
 	// Requests from them take the client address from X-Real-IP.
 	TrustedProxies []string `json:"trusted_proxies"`
 	trusted        []netip.Prefix
+	// FirebirdHost ("host" or "host/port") receives every database the client
+	// sends that is not in Aliases. The host part the client sends is ignored.
+	FirebirdHost string `json:"firebird_host"`
 	// Aliases maps the name clients send to the real Firebird connection string.
 	Aliases map[string]string `json:"aliases"`
 
@@ -86,7 +89,8 @@ func Load(path string, env func(string) string) (*Config, error) {
 }
 
 func applyEnv(c *Config, env func(string) string) error {
-	str := map[string]*string{"FBHTTP_LISTEN": &c.Listen, "FBHTTP_TLS_CERT": &c.TLSCert, "FBHTTP_TLS_KEY": &c.TLSKey}
+	str := map[string]*string{"FBHTTP_LISTEN": &c.Listen, "FBHTTP_TLS_CERT": &c.TLSCert, "FBHTTP_TLS_KEY": &c.TLSKey,
+		"FBHTTP_FIREBIRD_HOST": &c.FirebirdHost}
 	for k, p := range str {
 		if v := env(k); v != "" {
 			*p = v
@@ -141,8 +145,11 @@ func applyEnv(c *Config, env func(string) string) error {
 
 func (c *Config) validate() error {
 	var errs []error
-	if len(c.Aliases) == 0 {
-		errs = append(errs, errors.New("aliases: at least one alias is required"))
+	if len(c.Aliases) == 0 && c.FirebirdHost == "" {
+		errs = append(errs, errors.New("firebird_host or aliases: at least one is required"))
+	}
+	if c.FirebirdHost != "" && (strings.ContainsAny(c.FirebirdHost, ":\\ ") || strings.HasPrefix(c.FirebirdHost, "/")) {
+		errs = append(errs, fmt.Errorf("firebird_host: %q must be \"host\" or \"host/port\"", c.FirebirdHost))
 	}
 	for name := range c.Aliases {
 		if strings.ContainsAny(name, ":/\\") {
@@ -200,17 +207,43 @@ func (c *Config) IsTrustedProxy(addr netip.Addr) bool {
 	return false
 }
 
-// ResolveAlias maps the database string a client sent to a published target.
-// It tries an exact match, then the text after the first ':' (D9).
-// Anything else, including file paths, is rejected.
+// ResolveAlias maps the database string a client sent to a Firebird target.
+// It tries an exact alias, then the text after the first ':' as an alias (D9).
+// Otherwise, when firebird_host is set, the database part (path or server
+// alias) is opened on that host and the host the client sent is ignored.
 func (c *Config) ResolveAlias(db string) (alias, target string, ok bool) {
 	if t, ok := c.Aliases[db]; ok {
 		return db, t, true
 	}
-	if _, rest, found := strings.Cut(db, ":"); found {
-		if t, ok := c.Aliases[rest]; ok {
-			return rest, t, true
+	rest := db
+	if !isDrivePath(db) {
+		if _, r, found := strings.Cut(db, ":"); found {
+			rest = r
 		}
 	}
-	return "", "", false
+	if t, ok := c.Aliases[rest]; ok {
+		return rest, t, true
+	}
+	if c.FirebirdHost == "" || !safeDatabase(rest) {
+		return "", "", false
+	}
+	return rest, c.FirebirdHost + ":" + rest, true
+}
+
+// isDrivePath reports a Windows path such as C:\data\x.fdb.
+func isDrivePath(s string) bool {
+	return len(s) >= 3 && s[1] == ':' && (s[2] == '\\' || s[2] == '/') &&
+		(s[0]|0x20 >= 'a' && s[0]|0x20 <= 'z')
+}
+
+// safeDatabase rejects anything Firebird could read as another server:
+// a second "host:", UNC (\\host\path) and URL forms (inet://, xnet://).
+func safeDatabase(s string) bool {
+	if s == "" || strings.HasPrefix(s, "\\\\") || strings.HasPrefix(s, "//") || strings.ContainsAny(s, "\x00\r\n") {
+		return false
+	}
+	if isDrivePath(s) {
+		s = s[2:]
+	}
+	return !strings.Contains(s, ":")
 }

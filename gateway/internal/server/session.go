@@ -23,6 +23,7 @@ type handle struct {
 	h    fb.Handle
 	stmt *fb.Stmt
 	out  protocol.Layout // fetch layout of an open cursor
+	sql  string          // for FBHTTP_DEBUG_SQL only
 }
 
 // Session is one Firebird attachment and all handles created on it.
@@ -57,10 +58,24 @@ func (s *Session) idleFor(now time.Time) time.Duration {
 	return now.Sub(time.Unix(0, s.lastActive.Load()))
 }
 
+// clientIDBase starts the id range clients may choose (START_TRANSACTION),
+// so a request can start a transaction and use it in the same batch.
+// Gateway ids count up from 1 and never reach it.
+const clientIDBase = 0x80000000
+
 func (s *Session) add(h *handle) uint32 {
 	s.nextID++
 	s.handles[s.nextID] = h
 	return s.nextID
+}
+
+// addAs registers h under id, or under a new gateway id when id is 0.
+func (s *Session) addAs(id uint32, h *handle) uint32 {
+	if id == 0 {
+		return s.add(h)
+	}
+	s.handles[id] = h
+	return id
 }
 
 func (s *Session) get(id uint32, k kind) (*handle, *protocol.Error) {

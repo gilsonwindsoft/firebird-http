@@ -22,6 +22,12 @@ type Config struct {
 	// Aliases maps the name clients send to the real Firebird connection string.
 	Aliases map[string]string `json:"aliases"`
 
+	// SetBind is sent as isc_dpb_set_bind (Firebird 4+) unless the client
+	// sends its own. The default makes Firebird 4/5 return the legacy types
+	// (BIGINT, DOUBLE, TIMESTAMP) that clients built for Firebird 3 expect.
+	// Nil means the default; an empty string disables it.
+	SetBind *string `json:"set_bind"`
+
 	MaxSessions      int `json:"max_sessions"`
 	MaxSessionsPerIP int `json:"max_sessions_per_ip"`
 	MaxBodyBytes     int `json:"max_body_bytes"`
@@ -42,6 +48,16 @@ func defaults() Config {
 		IdleTimeoutSec:   1800,
 		ShutdownGraceSec: 20,
 	}
+}
+
+const DefaultSetBind = "int128 to legacy;decfloat to legacy;time zone to legacy"
+
+// Bind returns the isc_dpb_set_bind value to use ("" = none).
+func (c *Config) Bind() string {
+	if c.SetBind == nil {
+		return DefaultSetBind
+	}
+	return *c.SetBind
 }
 
 func (c *Config) IdleTimeout() time.Duration { return time.Duration(c.IdleTimeoutSec) * time.Second }
@@ -85,6 +101,13 @@ func applyEnv(c *Config, env func(string) string) error {
 			}
 			*p = n
 		}
+	}
+	// FBHTTP_SET_BIND=none disables it.
+	if v := env("FBHTTP_SET_BIND"); v != "" {
+		if v == "none" {
+			v = ""
+		}
+		c.SetBind = &v
 	}
 	if v := env("FBHTTP_PLAIN_HTTP"); v != "" {
 		b, err := strconv.ParseBool(v)

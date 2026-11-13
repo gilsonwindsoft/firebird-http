@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Servidor HTTP que roda em Linux perto do Firebird 3–5, mantém uma sessão com estado para cada conexão aberta pela biblioteca `fbclienthttp.dll` e executa no banco as chamadas que ela envia.
+Servidor HTTP que roda em Linux perto do Firebird 3–5, mantém uma sessão com estado para cada conexão aberta pela biblioteca `ws-fbclient.dll` e executa no banco as chamadas que ela envia.
 
 ## ADDED Requirements
 

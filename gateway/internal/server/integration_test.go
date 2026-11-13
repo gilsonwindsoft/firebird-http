@@ -60,6 +60,7 @@ func setupSchema() error {
 		"RECREATE TABLE T_ROWS (ID INTEGER NOT NULL PRIMARY KEY, NAME VARCHAR(50), AMOUNT NUMERIC(18,4), CREATED TIMESTAMP, FLAG BOOLEAN, NOTE BLOB SUB_TYPE TEXT)",
 		"RECREATE TABLE T_KV (ID INTEGER NOT NULL PRIMARY KEY, V VARCHAR(20))",
 		"RECREATE TABLE T_BLOB (ID INTEGER NOT NULL PRIMARY KEY, B BLOB SUB_TYPE BINARY)",
+		"CREATE OR ALTER PROCEDURE P_ADD (A INTEGER, B INTEGER) RETURNS (C INTEGER) AS BEGIN C = A + B; END",
 	}
 	for _, sql := range ddl {
 		tr, e := fb.StartTransaction(db, tpbDefault)
@@ -71,7 +72,7 @@ func setupSchema() error {
 			return fmt.Errorf("%s: %w", sql, e)
 		}
 		if e := fb.Commit(&tr); e != nil {
-			return e
+			return errOf(e)
 		}
 	}
 	tr, e := fb.StartTransaction(db, tpbDefault)
@@ -90,7 +91,15 @@ func setupSchema() error {
 		fb.Rollback(&tr)
 		return e
 	}
-	return fb.Commit(&tr)
+	return errOf(fb.Commit(&tr))
+}
+
+// errOf avoids returning a typed nil *protocol.Error as a non-nil error.
+func errOf(e *protocol.Error) error {
+	if e == nil {
+		return nil
+	}
+	return e
 }
 
 type env struct {
@@ -143,10 +152,16 @@ func (e *env) attach(t *testing.T) *client {
 func TestAttachDetach(t *testing.T) {
 	e := newEnv(t, nil)
 	c := e.attach(t)
-	rows, _ := c.query(c.startTr(), "SELECT 1 FROM RDB$DATABASE", nil, 10)
+	tr := c.startTr()
+	rows, _ := c.query(tr, "SELECT 1 FROM RDB$DATABASE", nil, 10)
 	if len(rows) != 1 || valueInt32(rows[0][0]) != 1 {
 		t.Fatalf("rows %+v", rows)
 	}
+	// Like the native client, detach refuses open transactions.
+	if _, err := c.one(op(protocol.OpDetach, func(w *protocol.Writer) { w.U32(c.db) })); err == nil {
+		t.Fatal("detach with open transaction succeeded")
+	}
+	c.trOp(protocol.OpCommit, tr)
 	c.must(op(protocol.OpDetach, func(w *protocol.Writer) { w.U32(c.db) }))
 	if n := e.srv.SessionCount(); n != 0 {
 		t.Fatalf("sessions %d", n)
@@ -187,7 +202,7 @@ func TestWrongPassword(t *testing.T) {
 func TestInvalidToken(t *testing.T) {
 	e := newEnv(t, nil)
 	c := &client{t: t, url: e.http.URL, token: "deadbeef", seq: 1}
-	_, err := c.one(op(protocol.OpStartTransaction, func(w *protocol.Writer) { w.U32(1); w.Bytes(tpbDefault) }))
+	_, err := c.one(op(protocol.OpStartTransaction, func(w *protocol.Writer) { w.U32(1); w.Bytes(tpbDefault); w.U32(0) }))
 	if err == nil || err.Category != protocol.CatSession {
 		t.Fatalf("got %v", err)
 	}
@@ -523,13 +538,13 @@ func TestLogsHaveNoSecrets(t *testing.T) {
 func TestDatabaseAndTransactionInfo(t *testing.T) {
 	e := newEnv(t, nil)
 	c := e.attach(t)
-	items := []byte{62 /* isc_info_db_sql_dialect */, 1}
-	r := c.must(op(protocol.OpDatabaseInfo, func(w *protocol.Writer) { w.U32(c.db); w.Bytes(items); w.U32(32) }))
+	items := []byte{62 /* isc_info_db_sql_dialect */, 103 /* isc_info_firebird_version */, 1}
+	r := c.must(op(protocol.OpDatabaseInfo, func(w *protocol.Writer) { w.U32(c.db); w.Bytes(items); w.U32(1024) }))
 	got := r.Bytes()
 
 	db, _ := fb.Attach(testDB, dpb(testUser, testPassword))
 	defer fb.Detach(&db)
-	want, _ := fb.DatabaseInfo(db, items, 32)
+	want, _ := fb.DatabaseInfo(db, items, 1024)
 	if !bytes.Equal(got, want) {
 		t.Fatalf("got %v want %v", got, want)
 	}
@@ -617,21 +632,29 @@ func TestExecuteProcedureAndImmediate(t *testing.T) {
 	e := newEnv(t, nil)
 	c := e.attach(t)
 	tr := c.startTr()
-	p, err := c.prepare(tr, "EXECUTE BLOCK RETURNS (X INTEGER) AS BEGIN X = 42; END")
+	p, err := c.prepare(tr, "EXECUTE PROCEDURE P_ADD(?, ?)")
 	if err != nil {
 		t.Fatal(err)
 	}
 	outL := layoutOf(p.out)
-	// execute2 with output and fetch 0.
-	r := c.must(executeOp(tr, p, nil, outL, 0))
-	kind := r.U8()
-	if kind == 2 {
-		b := readBatch(r, outL)
-		if len(b.rows) != 0 {
-			t.Fatalf("unexpected rows")
-		}
-	} else if kind != 1 || r.U8() != 1 || valueInt32(protocol.ReadRow(r, outL)[0]) != 42 {
+	r := c.must(executeOp(tr, p, []protocol.Value{int32Value(20), int32Value(22)}, outL, 0))
+	if kind := r.U8(); kind != 1 || r.U8() != 1 || valueInt32(protocol.ReadRow(r, outL)[0]) != 42 {
 		t.Fatalf("execute2: kind %d", kind)
+	}
+	if recordsAffected(r.Bytes()) < 0 {
+		t.Fatal("no records info")
+	}
+
+	// Singleton SELECT through execute2 (fetch 0 with output layout).
+	p, _ = c.prepare(tr, "SELECT ID FROM T_ROWS WHERE ID = ?")
+	outL = layoutOf(p.out)
+	r = c.must(executeOp(tr, p, []protocol.Value{int32Value(5)}, outL, 0))
+	if kind := r.U8(); kind != 1 || r.U8() != 1 || valueInt32(protocol.ReadRow(r, outL)[0]) != 5 {
+		t.Fatalf("singleton: kind %d", kind)
+	}
+	// Native libfbclient reports isc_stream_eof; the gateway relays it.
+	if _, err := c.one(executeOp(tr, p, []protocol.Value{int32Value(-99)}, outL, 0)); err == nil || err.Status[0].Num != 335544374 /* isc_stream_eof */ {
+		t.Fatalf("singleton without rows: %+v", err)
 	}
 
 	// EXECUTE IMMEDIATE with SET TRANSACTION creates a transaction id.
@@ -666,4 +689,107 @@ func TestDeferredFreeInBatch(t *testing.T) {
 	if len(res) != 3 || res[0].Status != 0 || res[1].Status != 1 || res[2].Status != 0 {
 		t.Fatalf("results %+v", res)
 	}
+}
+
+// TestExternalHoldSession opens a session on a running gateway container,
+// writes in an open transaction and keeps it open, so a SIGTERM test can
+// check the rollback. Runs only when FBHTTP_TEST_GATEWAY_URL is set.
+func TestExternalHoldSession(t *testing.T) {
+	url := os.Getenv("FBHTTP_TEST_GATEWAY_URL")
+	if url == "" {
+		t.Skip("FBHTTP_TEST_GATEWAY_URL not set")
+	}
+	c, err := attachClient(t, url, "test", testUser, testPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := c.startTr()
+	if _, err := c.execSQL(tr, "UPDATE OR INSERT INTO T_KV VALUES (8001, 'sigterm')", nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Log("session open with uncommitted row 8001; holding")
+	time.Sleep(time.Minute)
+}
+
+func TestClientTransactionIDInSameBatch(t *testing.T) {
+	e := newEnv(t, nil)
+	c := e.attach(t)
+	const tr = 0x80000001
+	start := op(protocol.OpStartTransaction, func(w *protocol.Writer) { w.U32(c.db); w.Bytes(tpbDefault); w.U32(tr) })
+	prep := op(protocol.OpPrepare, func(w *protocol.Writer) {
+		w.U32(c.db)
+		w.U32(tr)
+		w.U32(0)
+		w.U16(3)
+		w.Str("SELECT 1 FROM RDB$DATABASE")
+		w.Bytes(nil)
+		w.U32(0)
+	})
+	res := c.call(start, prep)
+	if len(res) != 2 || res[0].Status != 0 || res[1].Status != 0 {
+		t.Fatalf("results %+v", res)
+	}
+	if got := (&protocol.Reader{B: res[0].Payload}).U32(); got != tr {
+		t.Fatalf("tr id %x", got)
+	}
+	if err := c.trOp(protocol.OpCommit, tr); err != nil {
+		t.Fatal(err)
+	}
+	// Reusing an id that is not in the client range is refused.
+	bad := op(protocol.OpStartTransaction, func(w *protocol.Writer) { w.U32(c.db); w.Bytes(tpbDefault); w.U32(5) })
+	if _, err := c.one(bad); err == nil || err.Category != protocol.CatProtocol {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestPrepareInfoAndCursorRecordsMatchNative(t *testing.T) {
+	e := newEnv(t, nil)
+	c := e.attach(t)
+	tr := c.startTr()
+	const sql = "SELECT R.ID, R.NAME FROM T_ROWS R WHERE R.ID < 10"
+	p, err := c.prepare(tr, sql)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := c.must(executeOp(tr, p, nil, layoutOf(p.out), 5))
+	if r.U8() != 2 {
+		t.Fatal("not a cursor")
+	}
+	records := r.Bytes()
+
+	db, _ := fb.Attach(testDB, dpb(testUser, testPassword))
+	defer fb.Detach(&db)
+	ntr, _ := fb.StartTransaction(db, tpbDefault)
+	defer fb.Rollback(&ntr)
+	st, _ := fb.Allocate(db)
+	out, _, _ := st.Prepare(ntr, 3, sql)
+	info, _ := st.SQLInfo(prepareInfoItems, 1024)
+	if !bytes.Equal(p.info, info) {
+		t.Fatalf("prepare info differs:\n%v\n%v", p.info, info)
+	}
+	st.Open(&ntr, 3, nil, nil, layoutOf(out))
+	nrec, _ := st.RecordsInfo()
+	if !bytes.Equal(records, nrec) {
+		t.Fatalf("records differ:\n%v\n%v", records, nrec)
+	}
+}
+
+func TestLegacyTypesByDefault(t *testing.T) {
+	const sql = "SELECT SUM(AMOUNT), CURRENT_TIMESTAMP FROM T_ROWS"
+	types := func(e *env) []int16 {
+		c := e.attach(t)
+		p, err := c.prepare(c.startTr(), sql)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return []int16{p.out[0].Type &^ 1, p.out[1].Type &^ 1}
+	}
+	def := types(newEnv(t, nil))
+	// FB3 has no INT128/time zone types; FB4/5 must be coerced to legacy.
+	if def[0] != 580 || def[1] != 510 {
+		t.Fatalf("default bind: got types %v, want [580 510]", def)
+	}
+	none := ""
+	native := types(newEnv(t, func(c *config.Config) { c.SetBind = &none }))
+	t.Logf("without set_bind: %v", native)
 }

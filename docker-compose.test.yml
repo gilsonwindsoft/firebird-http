@@ -1,10 +1,13 @@
 # Integration environment: Firebird + gateway (plain HTTP) + Go test runner.
 #   FB_VERSION=5 docker compose -f docker-compose.test.yml run --rm tests
 #   FB_VERSION=5 docker compose -f docker-compose.test.yml up -d firebird gateway
-# Firebird 3 and 4 images are amd64 only (on Apple Silicon start Colima with --vz-rosetta).
+# Firebird 3 and 4 images are amd64 only. On Apple Silicon: colima start --vz-rosetta
+# and FB_PLATFORM=linux/amd64.
 services:
   firebird:
     image: firebirdsql/firebird:${FB_VERSION:-5}
+    # FB 3 and 4 images are amd64 only; on arm64 hosts set FB_PLATFORM=linux/amd64.
+    platform: ${FB_PLATFORM:-}
     environment:
       FIREBIRD_ROOT_PASSWORD: masterkey
       FIREBIRD_DATABASE: test.fdb
@@ -18,9 +21,8 @@ services:
     environment:
       FBHTTP_PLAIN_HTTP: "true"
       FBHTTP_LISTEN: ":8080"
-      FBHTTP_ALIASES: "test=firebird:/var/lib/firebird/data/test.fdb"
-    healthcheck:
-      test: ["CMD", "fbhttp-gateway", "-healthcheck", "http://127.0.0.1:8080/healthz"]
+      FBHTTP_ALIASES: "${FBHTTP_ALIASES:-test=firebird:/var/lib/firebird/data/test.fdb}"
+      FBHTTP_DEBUG_SQL: "${FBHTTP_DEBUG_SQL:-0}"
     ports:
       - "8080:8080"
     depends_on:
@@ -36,6 +38,7 @@ services:
       FBHTTP_TEST_DB: firebird:/var/lib/firebird/data/test.fdb
       FBHTTP_TEST_USER: SYSDBA
       FBHTTP_TEST_PASSWORD: masterkey
+      FBHTTP_TEST_GATEWAY_URL: ${FBHTTP_TEST_GATEWAY_URL:-}
     volumes:
       - ./gateway:/src
       - ./tests:/tests

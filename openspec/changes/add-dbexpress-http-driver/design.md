@@ -30,7 +30,7 @@ Os requisitos estão em `specs/fbclient-http-library`, `specs/firebird-http-gate
 Escolha do usuário. A API C do Firebird é documentada, `stdcall`, independente da versão do Delphi, e o layout dos dados (`XSQLDA`) é fixo. A alternativa era um driver dbExpress próprio. Ela foi rejeitada porque a ABI de driver DBX não tem documentação, muda entre versões do Delphi e exige copiar à mão o mapeamento de tipos do driver nativo.
 
 ### D2. Descobrir a API usada por medição, não por suposição
-Antes da DLL real, construir um **proxy de log** `fbclient.dll`. O proxy exporta a API pública completa, grava cada chamada (nome, argumentos, itens de info, tags de DPB/TPB/BPB) num log e encaminha a chamada ao `fbclient.dll` real. Rodar as telas principais da aplicação e uma suíte de teste com ele. O log define a lista exata de exports, os itens de info e as tags de bloco de parâmetros a suportar. Todos os outros exports devolvem o status "não suportado". O log também confirma se o driver Devart usa só a API legada `isc_*` ou também a API OO. A API OO é o maior risco de escopo.
+Antes da DLL real, construir um **proxy de log** (feito; resultado em `docs/api-surface.md`: só API legada, 22 funções) `fbclient.dll`. O proxy exporta a API pública completa, grava cada chamada (nome, argumentos, itens de info, tags de DPB/TPB/BPB) num log e encaminha a chamada ao `fbclient.dll` real. Rodar as telas principais da aplicação e uma suíte de teste com ele. O log define a lista exata de exports, os itens de info e as tags de bloco de parâmetros a suportar. Todos os outros exports devolvem o status "não suportado". O log também confirma se o driver Devart usa só a API legada `isc_*` ou também a API OO. A API OO é o maior risco de escopo.
 
 ### D3. Linguagem da DLL: Delphi (Win32)
 A latência de rede (milissegundos) é muito maior que o tempo de CPU local (microssegundos por chamada). Por isso a linguagem da DLL quase não afeta a velocidade. Delphi é a linguagem da equipe, compila DLL 32 bits com exports `stdcall` sem dependência de runtime e acessa a WinHTTP direto. Rust ou C eram alternativas. Têm velocidade parecida e mais segurança de memória no código cheio de ponteiros do `XSQLDA`, mas obrigam a equipe a manter uma segunda linguagem. Mitigação para segurança de memória: cada função exportada captura todas as exceções na fronteira e as converte em status vector, e todo handle passa por uma tabela de handles (D7).
@@ -63,7 +63,11 @@ O gateway mantém, para cada sessão, uma tabela que liga IDs opacos de 32 bits 
 
 ### D8. Redução de idas e voltas
 - **Prepare**: uma requisição faz allocate, prepare, `describe`, `describe_bind` e `sql_info(stmt_type)`. A DLL guarda o resultado e responde localmente os `isc_dsql_describe*` e os itens comuns de `isc_dsql_sql_info` seguintes.
-- **Execute + primeiro lote**: um execute que abre cursor devolve as primeiras N linhas na mesma resposta.
+- **Execute + primeiro lote**: um execute que abre cursor devolve as primeiras N linhas e o bloco `records` na mesma resposta. O log da tarefa 1.3 mostrou que o driver Devart abre cursores com `isc_dsql_execute2` (saída `nil`) e não muda o XSQLDA entre o describe e o fetch. Por isso a DLL usa o layout do describe já no execute.
+- **Informações de comando**: o PREPARE também devolve o resultado de `isc_dsql_sql_info` para a lista de itens que o driver pede depois do describe. A DLL responde localmente `stmt_type`, essa lista e `records` (este vem no EXECUTE).
+- **Início de transação adiado**: `isc_start_multiple` devolve na hora um handle local com id na faixa do cliente (≥ 0x80000000). O START vai no mesmo lote da primeira operação que usa a transação. Erros do START aparecem nessa operação.
+- **Informações estáticas da conexão**: `isc_database_info` com itens que não mudam durante a conexão (dialeto, versão) fica em cache por conexão.
+- **Funções locais**: `isc_vax_integer`, `isc_portable_integer`, `isc_get_client_version` e as de data (`isc_encode_*`/`isc_decode_*`) não usam a rede.
 - **Fetch**: `isc_dsql_fetch` lê do lote local. Quando o lote acaba, a DLL pede as próximas N linhas. N vem da configuração, padrão 200, e o gateway também limita N.
 - **Chamadas adiadas**: `isc_dsql_free_statement` (close ou drop) e `isc_dsql_set_cursor_name` vão para uma fila. A DLL envia a fila no início da próxima requisição. Essas chamadas não falham de um jeito que o driver espere ver. Commit, rollback e execute nunca são adiados.
 - **Leitura de BLOB**: `isc_open_blob2` devolve os dados de `isc_blob_info` e, abaixo do limite embutido (padrão 64 KB), o conteúdo inteiro. Os `isc_get_segment` seguintes são atendidos localmente. Acima do limite, a DLL lê blocos de 1 MB.
@@ -72,7 +76,7 @@ O gateway mantém, para cada sessão, uma tabela que liga IDs opacos de 32 bits 
 ### D9. Destino da conexão e configuração
 O driver passa `Database` (por exemplo `servidor:alias` ou `alias`) para `isc_attach_database`. A DLL envia essa string sem mudança. O gateway primeiro tenta casar exatamente com os aliases publicados. Depois tenta o texto após o primeiro `:`. O gateway nunca aceita um caminho de arquivo que não esteja na lista de aliases.
 
-A URL do gateway, opções de TLS, timeouts e tamanho do lote vêm do `fbclienthttp.ini`, na mesma pasta da DLL. Cada item pode ser sobrescrito por uma variável de ambiente `FBHTTP_*`. Usuário, senha, role e charset vêm do DPB que o driver já monta. O gateway repassa o DPB para `isc_attach_database` depois de remover tags que se referem ao sistema de arquivos local.
+A URL do gateway, opções de TLS, timeouts e tamanho do lote vêm do `ws-fbclient.ini`, na mesma pasta da DLL. Cada item pode ser sobrescrito por uma variável de ambiente `FBHTTP_*`. Usuário, senha, role e charset vêm do DPB que o driver já monta. O gateway repassa o DPB para `isc_attach_database` depois de remover tags que se referem ao sistema de arquivos local. O gateway usa o cliente do Firebird 4, e com ele o FB 4/5 devolve tipos novos (`INT128` em `SUM(NUMERIC)`, `DECFLOAT`, `TIMESTAMP WITH TIME ZONE` em `CURRENT_TIMESTAMP`) que o driver Devart antigo não lê. Por isso o gateway acrescenta `isc_dpb_set_bind` = `int128 to legacy;decfloat to legacy;time zone to legacy` quando o cliente não manda o seu. Esse é o mesmo resultado que o cliente nativo da aplicação recebe. A opção `set_bind` permite mudar ou desligar.
 
 ### D10. Erros
 O gateway devolve o status vector completo e o texto que `fb_interpret` produz para cada item. A DLL monta um status vector na própria memória, é dona das strings dos argumentos e atende `fb_interpret` e `isc_sql_interprete` a partir do texto guardado. Falhas de rede e HTTP viram `isc_network_error` com `isc_net_read_err` ou `isc_net_write_err`. O driver Devart então mostra a exceção normal de "conexão perdida".
@@ -98,10 +102,11 @@ A sessão começa em `isc_attach_database` e termina em `isc_detach_database`. O
 ## Migration Plan
 
 1. Subir o gateway com `docker compose up -d` perto do Firebird. Publicar os aliases e configurar TLS.
-2. Numa estação, copiar `fbclienthttp.dll` e `fbclienthttp.ini` para a pasta da aplicação. Configurar `VendorLib = fbclienthttp.dll` e `Database = alias`.
+2. Numa estação, copiar `ws-fbclient.dll` e `ws-fbclient.ini` para a pasta da aplicação. Configurar `VendorLib = ws-fbclient.dll` e `Database = alias`.
 3. Rodar a aplicação em piloto. Rollback: voltar `VendorLib` para `fbclient.dll` e o `Database` original. A aplicação não tem outra mudança, então o rollback é imediato.
 
 ## Open Questions
+
 
 - Tamanho padrão do lote e limite de BLOB embutido. Definir pelas medições da tarefa 7.3. São valores de configuração, então o design não muda.
 - Criptografia de rede do Firebird (`WireCrypt`) entre gateway e Firebird quando estão em hosts diferentes. É um item de configuração do gateway.

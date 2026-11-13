@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Contrato de rede versionado entre a biblioteca `fbclienthttp.dll` e o gateway HTTP, que define operações, transporte de dados, lotes, BLOBs, erros, ordem e repetição de requisições, para que os dois lados evoluam de forma independente.
+Contrato de rede versionado entre a biblioteca `ws-fbclient.dll` e o gateway HTTP, que define operações, transporte de dados, lotes, BLOBs, erros, ordem e repetição de requisições, para que os dois lados evoluam de forma independente.
 
 ## ADDED Requirements
 

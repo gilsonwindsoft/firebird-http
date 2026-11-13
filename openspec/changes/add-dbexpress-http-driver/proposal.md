@@ -16,10 +16,10 @@ Substituir o `fbclient.dll` foi escolhido em vez de escrever um driver dbExpress
 
 ## What Changes
 
-- Nova DLL Windows 32 bits (`fbclienthttp.dll`) que exporta a parte da API `isc_*`/`fb_*` usada pelo driver dbExpress da Devart e encaminha as chamadas ao gateway por HTTPS. Não precisa de `fbclient.dll` na estação.
+- Nova DLL Windows 32 bits (`ws-fbclient.dll`) que exporta a parte da API `isc_*`/`fb_*` usada pelo driver dbExpress da Devart e encaminha as chamadas ao gateway por HTTPS. Não precisa de `fbclient.dll` na estação.
 - Novo gateway HTTP para Linux que mantém sessões com estado (uma conexão Firebird por conexão da aplicação), executa as chamadas num `libfbclient` real e devolve resultados em lotes.
 - Novo protocolo binário versionado entre DLL e gateway, com otimizações contra latência: busca de linhas em lotes, leitura antecipada de BLOBs e junção de chamadas encadeadas.
-- Configuração só por `VendorLib = fbclienthttp.dll` e pelo parâmetro `Database` da conexão (alias publicado no gateway). A URL do gateway e as opções de TLS ficam num arquivo de configuração ao lado da DLL ou em variáveis de ambiente.
+- Configuração só por `VendorLib = ws-fbclient.dll` e pelo parâmetro `Database` da conexão (alias publicado no gateway). A URL do gateway e as opções de TLS ficam num arquivo de configuração ao lado da DLL ou em variáveis de ambiente.
 - Nenhuma mudança no código da aplicação nem no driver dbExpress.
 
 ## Capabilities

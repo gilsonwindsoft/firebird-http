@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -22,11 +23,8 @@ import (
 
 func main() {
 	path := flag.String("config", os.Getenv("FBHTTP_CONFIG"), "JSON configuration file (optional; FBHTTP_* variables override it)")
-	health := flag.String("healthcheck", "", "probe this URL and exit 0 when healthy (for Docker HEALTHCHECK)")
+	health := flag.Bool("healthcheck", false, "probe the local listener and exit 0 when healthy (Docker HEALTHCHECK)")
 	flag.Parse()
-	if *health != "" {
-		os.Exit(probe(*health))
-	}
 
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	cfg, err := config.Load(*path, os.Getenv)
@@ -34,13 +32,25 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+	if *health {
+		os.Exit(probe(cfg))
+	}
 	if err := run(cfg, log); err != nil {
 		log.Error("gateway stopped", "error", err.Error())
 		os.Exit(1)
 	}
 }
 
-func probe(url string) int {
+func probe(cfg *config.Config) int {
+	_, port, err := net.SplitHostPort(cfg.Listen)
+	if err != nil {
+		return 1
+	}
+	scheme := "https"
+	if cfg.PlainHTTP {
+		scheme = "http"
+	}
+	url := scheme + "://127.0.0.1:" + port + "/healthz"
 	c := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{
 		// The probe runs inside the container against its own listener.
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},

@@ -5,13 +5,27 @@
 services:
   gateway:
     build: ./gateway
+    platform: linux/amd64
     image: fbhttp-gateway:latest
     restart: unless-stopped
+    environment:
+      FBHTTP_CONFIG: /etc/fbhttp/config.json
     ports:
       - "8443:8443"
     volumes:
-      - ./deploy/config.json:/etc/fbhttp/config.json:ro
-      - ./deploy/certs:/etc/fbhttp/certs:ro
+      # create_host_path: false makes a missing file fail instead of becoming a directory.
+      - type: bind
+        source: ./deploy/config.json
+        target: /etc/fbhttp/config.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./deploy/certs
+        target: /etc/fbhttp/certs
+        read_only: true
+        bind:
+          create_host_path: false
     # Time to roll back open transactions after SIGTERM (shutdown_grace_seconds + margin).
     stop_grace_period: 40s
     read_only: true

@@ -17,7 +17,6 @@ RUN apt-get update \
 COPY --from=build /out/fbhttp-gateway /usr/local/bin/fbhttp-gateway
 USER fbhttp
 EXPOSE 8443
-ENV FBHTTP_CONFIG=/etc/fbhttp/config.json
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
-  CMD ["fbhttp-gateway", "-healthcheck", "https://127.0.0.1:8443/healthz"]
+  CMD ["fbhttp-gateway", "-healthcheck"]
 ENTRYPOINT ["fbhttp-gateway"]

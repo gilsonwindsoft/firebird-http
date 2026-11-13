@@ -2,20 +2,24 @@
 
 ## Purpose
 
-DLL Windows 32 bits que o driver dbExpress da Devart carrega como `fbclient.dll` (parâmetro `VendorLib`), e que executa as chamadas da API do Firebird pelo gateway HTTP, sem cliente Firebird instalado na estação.
+DLL Windows 32 bits que o driver dbExpress da Devart carrega como `fbclient.dll` (parâmetro `VendorLib`), e que executa as chamadas da API do Firebird pelo gateway HTTP, sem precisar do cliente Firebird na estação e sem conflito com ele quando estiver instalado.
 
 ## ADDED Requirements
 
 ### Requirement: Substituição transparente do fbclient
-A biblioteca SHALL ser uma DLL Windows 32 bits que exporta, com o mesmo nome, a mesma assinatura e a convenção `stdcall`, todas as funções da API do Firebird que o driver dbExpress da Devart chama. Uma aplicação SHALL funcionar só com a troca de `VendorLib` e de `Database`, sem outra mudança de código ou de driver.
+A biblioteca SHALL ser uma DLL Windows 32 bits que exporta, com o mesmo nome, a mesma assinatura e a convenção `stdcall`, todas as funções da API do Firebird que o driver dbExpress da Devart chama. Uma aplicação SHALL funcionar só com a troca de `VendorLib` e de `Database`, sem outra mudança de código ou de driver. A biblioteca SHALL usar um nome próprio (`ws-fbclient.dll`) e SHALL NOT carregar nem depender do `fbclient.dll`, para conviver com o cliente nativo na mesma pasta e no mesmo processo.
 
 #### Scenario: Abrir conexão
-- **WHEN** a aplicação configura `VendorLib = fbclienthttp.dll` e `Database` com um alias publicado no gateway, e abre a `TSQLConnection`
-- **THEN** a conexão abre sem erro e nenhum `fbclient.dll` é carregado no processo
+- **WHEN** a aplicação configura `VendorLib = ws-fbclient.dll` e `Database` com um alias publicado no gateway, e abre a `TSQLConnection`
+- **THEN** a conexão abre sem erro e a `ws-fbclient.dll` não carrega o `fbclient.dll`
+
+#### Scenario: Convivência com o cliente nativo
+- **WHEN** a aplicação abre uma conexão com `VendorLib = fbclient.dll` (direta) e outra com `VendorLib = ws-fbclient.dll` (via gateway) no mesmo processo
+- **THEN** as duas funcionam ao mesmo tempo, cada uma com sua biblioteca, sem conflito de handles, status ou mensagens
 
 #### Scenario: Função não suportada
 - **WHEN** o driver chama uma função exportada que a biblioteca não implementa por completo
-- **THEN** a função devolve um status vector de erro com mensagem "not supported by fbclienthttp", e o processo não trava
+- **THEN** a função devolve um status vector de erro com mensagem "not supported by ws-fbclient", e o processo não trava
 
 ### Requirement: Configuração do gateway
 A biblioteca SHALL ler a URL do gateway, as opções de TLS e os timeouts de um arquivo de configuração na pasta da DLL e de variáveis de ambiente. Variáveis de ambiente SHALL ter prioridade sobre o arquivo. O usuário, a senha, a role e o charset SHALL vir dos parâmetros que o driver já envia na conexão.

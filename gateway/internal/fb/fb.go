@@ -65,10 +65,16 @@ func (s *status) failed() *protocol.Error {
 			i = len(s)
 		}
 	}
+	// fb_interpret advances a pointer to the vector, so both live in C memory.
+	cv := (*status)(C.malloc(C.size_t(unsafe.Sizeof(*s))))
+	defer C.free(unsafe.Pointer(cv))
+	*cv = *s
+	pv := (**C.ISC_STATUS)(C.malloc(C.size_t(unsafe.Sizeof(uintptr(0)))))
+	defer C.free(unsafe.Pointer(pv))
+	*pv = cv.p()
 	buf := (*C.char)(C.malloc(1024))
 	defer C.free(unsafe.Pointer(buf))
-	pv := (*C.ISC_STATUS)(s.p())
-	for C.fb_interpret(buf, 1024, &pv) > 0 {
+	for C.fb_interpret(buf, 1024, pv) > 0 {
 		e.Messages = append(e.Messages, C.GoString(buf))
 	}
 	return e
@@ -88,7 +94,7 @@ func info(call func(st *status, items *C.char, n C.short, buf *C.char, buflen C.
 	}
 	ci, free := cbytes(items)
 	defer free()
-	buf := C.malloc(C.size_t(buflen) + 1)
+	buf := C.calloc(C.size_t(buflen)+1, 1)
 	defer C.free(buf)
 	var st status
 	call(&st, ci, C.short(len(items)), (*C.char)(buf), C.short(buflen))
@@ -582,6 +588,35 @@ func SanitizeDPB(dpb []byte) (out []byte, ok bool) {
 	})
 	return out, ok
 }
+
+// AddDPBDefault appends tag=value unless the DPB already has tag.
+func AddDPBDefault(dpb []byte, tag byte, value string) []byte {
+	has := false
+	walkDPB(dpb, func(t byte, _, _ []byte) {
+		if t == tag {
+			has = true
+		}
+	})
+	if has || value == "" {
+		return dpb
+	}
+	if len(dpb) == 0 {
+		dpb = []byte{C.isc_dpb_version1}
+	}
+	if dpb[0] == C.isc_dpb_version2 {
+		dpb = append(dpb, tag)
+		dpb = binary.LittleEndian.AppendUint32(dpb, uint32(len(value)))
+		return append(dpb, value...)
+	}
+	if len(value) > 255 {
+		return dpb
+	}
+	dpb = append(dpb, tag, byte(len(value)))
+	return append(dpb, value...)
+}
+
+// DPBSetBind is isc_dpb_set_bind (Firebird 4+).
+const DPBSetBind = C.isc_dpb_set_bind
 
 // DPBUser returns isc_dpb_user_name, for logging.
 func DPBUser(dpb []byte) (user string) {

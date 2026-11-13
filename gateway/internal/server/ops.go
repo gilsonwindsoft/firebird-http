@@ -45,10 +45,14 @@ func (srv *Server) exec(s *Session, op protocol.Op) ([]byte, *protocol.Error) {
 	case protocol.OpStartTransaction:
 		db, e2 := s.get(r.U32(), kindDB)
 		tpb := r.Bytes()
+		want := r.U32() // 0 = gateway picks; else a client id with the high bit set
 		if e = e2; e == nil && r.Err == nil {
+			if want != 0 && (want < clientIDBase || s.handles[want] != nil) {
+				return nil, protoErr(protocol.CatProtocol, "invalid client transaction id %d", want)
+			}
 			var tr fb.Handle
 			if tr, e = fb.StartTransaction(db.h, tpb); e == nil {
-				w.U32(s.add(&handle{kind: kindTr, h: tr}))
+				w.U32(s.addAs(want, &handle{kind: kindTr, h: tr}))
 			}
 		}
 
@@ -234,6 +238,7 @@ func (srv *Server) prepare(s *Session, r *protocol.Reader, w *protocol.Writer) *
 	stmtID := r.U32()
 	dialect := r.U16()
 	sql := r.Str()
+	infoItems, infoLen := r.Bytes(), r.U32()
 	if r.Err != nil {
 		return nil // reported as malformed by exec
 	}
@@ -260,14 +265,28 @@ func (srv *Server) prepare(s *Session, r *protocol.Reader, w *protocol.Writer) *
 		}
 		return e
 	}
+	var info []byte
+	if len(infoItems) > 0 {
+		if info, e = st.stmt.SQLInfo(infoItems, infoLen); e != nil {
+			if stmtID == 0 {
+				st.stmt.Free(dsqlDrop)
+			}
+			return e
+		}
+	}
 	if stmtID == 0 {
 		stmtID = s.add(st)
 	}
 	st.out = nil
+	st.sql = sql
+	if srv.debugSQL {
+		srv.log.Info("debug prepare", "session", s.ID, "stmt", stmtID, "type", st.stmt.Type, "sql", sql, "out", descTypes(out), "in", descTypes(in))
+	}
 	w.U32(stmtID)
 	w.I32(st.stmt.Type)
 	protocol.WriteDesc(w, out)
 	protocol.WriteDesc(w, in)
+	w.Bytes(info)
 	return nil
 }
 
@@ -298,7 +317,12 @@ func (srv *Server) execute(s *Session, r *protocol.Reader, w *protocol.Writer) *
 			return e
 		}
 		st.out = outL
+		records, e := st.stmt.RecordsInfo() // before fetching, as the native client sees it
+		if e != nil {
+			return e
+		}
 		w.U8(2)
+		w.Bytes(records)
 		return srv.fetch(st, fetch, w)
 	}
 
@@ -335,6 +359,9 @@ func (srv *Server) fetch(st *handle, n int, w *protocol.Writer) *protocol.Error 
 		if rows, eof, e = st.stmt.Fetch(n); e != nil {
 			return e
 		}
+	}
+	if srv.debugSQL && len(rows) > 0 {
+		srv.log.Info("debug rows", "sql", st.sql, "layout", descTypes(st.out), "rows", len(rows), "first", rowHex(rows[0]))
 	}
 	w.U32(uint32(len(rows)))
 	for _, row := range rows {
@@ -420,4 +447,24 @@ func (srv *Server) openBlob(s *Session, r *protocol.Reader, w *protocol.Writer) 
 	w.U8(0)
 	w.Bytes(nil)
 	return nil
+}
+
+func descTypes(vars []protocol.Var) string {
+	out := ""
+	for i, v := range vars {
+		out += fmt.Sprintf("[%d:%d/%d/%d/%d %s]", i, v.Type, v.SubType, v.Scale, v.Len, v.AliasName)
+	}
+	return out
+}
+
+func rowHex(row []protocol.Value) string {
+	out := ""
+	for i, v := range row {
+		if v.Null {
+			out += fmt.Sprintf("[%d:NULL]", i)
+		} else {
+			out += fmt.Sprintf("[%d:%x]", i, v.Data)
+		}
+	}
+	return out
 }

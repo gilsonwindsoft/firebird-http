@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -24,6 +25,9 @@ const contentType = "application/x-fbhttp"
 type Server struct {
 	cfg *config.Config
 	log *slog.Logger
+	// debugSQL logs SQL text, column types and the first row of each cursor.
+	// Test environments only: it writes data to the log (FBHTTP_DEBUG_SQL=1).
+	debugSQL bool
 
 	mu       sync.Mutex
 	sessions map[string]*Session // by token
@@ -32,7 +36,12 @@ type Server struct {
 }
 
 func New(cfg *config.Config, log *slog.Logger) *Server {
-	return &Server{cfg: cfg, log: log, sessions: map[string]*Session{}, perIP: map[string]int{}}
+	srv := &Server{cfg: cfg, log: log, sessions: map[string]*Session{}, perIP: map[string]int{}}
+	srv.debugSQL = os.Getenv("FBHTTP_DEBUG_SQL") == "1"
+	if srv.debugSQL {
+		log.Warn("FBHTTP_DEBUG_SQL=1: SQL text and row data are written to the log")
+	}
+	return srv
 }
 
 func (srv *Server) Handler() http.Handler {
@@ -113,15 +122,22 @@ func (srv *Server) handleRPC(w http.ResponseWriter, r *http.Request) {
 	defer func() { s.touch(); s.busy.Add(-1) }()
 
 	s.mu.Lock()
-	resp, failed := srv.run(s, req)
+	resp, failed, ferr := srv.run(s, req)
 	closed := s.closed
 	s.mu.Unlock()
 	if closed {
 		srv.remove(s, "detach")
 	}
 	writeBody(w, resp)
-	srv.log.Info("request", "session", s.ID, "seq", req.Seq, "ops", opcodes(req), "error", failed,
-		"ms", time.Since(start).Milliseconds())
+	attrs := []any{"session", s.ID, "seq", req.Seq, "ops", opcodes(req), "error", failed, "ms", time.Since(start).Milliseconds()}
+	if ferr != nil {
+		// Category and gds codes only: messages can contain data values.
+		attrs = append(attrs, "category", ferr.Category, "gds", gdsCodes(ferr))
+		if srv.debugSQL {
+			attrs = append(attrs, "message", ferr.Messages)
+		}
+	}
+	srv.log.Info("request", attrs...)
 }
 
 func opcodes(req protocol.Request) []uint16 {
@@ -135,21 +151,22 @@ func opcodes(req protocol.Request) []uint16 {
 // run applies the seq rules and executes the batch. Caller holds s.mu.
 // Waiting on s.mu also covers "same seq still running": the retry gets the
 // stored response once the original finishes.
-func (srv *Server) run(s *Session, req protocol.Request) (resp []byte, failed bool) {
+func (srv *Server) run(s *Session, req protocol.Request) (resp []byte, failed bool, ferr *protocol.Error) {
 	switch {
 	case s.closed:
-		return errorResponse(req.Ops[0].Code, protoErr(protocol.CatSession, "fbhttp: invalid or expired session")), true
+		e := protoErr(protocol.CatSession, "fbhttp: invalid or expired session")
+		return errorResponse(req.Ops[0].Code, e), true, e
 	case req.Seq == s.lastSeq:
-		return s.lastResp, false
+		return s.lastResp, false, nil
 	case req.Seq != s.lastSeq+1:
-		return errorResponse(req.Ops[0].Code, protoErr(protocol.CatProtocol,
-			"fbhttp: out of order request: seq %d, expected %d", req.Seq, s.lastSeq+1)), true
+		e := protoErr(protocol.CatProtocol, "fbhttp: out of order request: seq %d, expected %d", req.Seq, s.lastSeq+1)
+		return errorResponse(req.Ops[0].Code, e), true, e
 	}
 	var results []protocol.Result
 	for _, op := range req.Ops {
 		if op.Code == protocol.OpAttach {
-			results = append(results, protocol.Result{Code: op.Code, Status: protocol.StatusError,
-				Payload: protocol.EncodeError(protoErr(protocol.CatProtocol, "ATTACH must be the only operation"))})
+			ferr = protoErr(protocol.CatProtocol, "ATTACH must be the only operation")
+			results = append(results, protocol.Result{Code: op.Code, Status: protocol.StatusError, Payload: protocol.EncodeError(ferr)})
 			failed = true
 			break
 		}
@@ -159,7 +176,7 @@ func (srv *Server) run(s *Session, req protocol.Request) (resp []byte, failed bo
 			if op.Flags&protocol.FlagDeferred != 0 {
 				continue
 			}
-			failed = true
+			failed, ferr = true, e
 			break
 		}
 		results = append(results, protocol.Result{Code: op.Code, Status: protocol.StatusOK, Payload: payload})
@@ -169,7 +186,17 @@ func (srv *Server) run(s *Session, req protocol.Request) (resp []byte, failed bo
 	}
 	resp = protocol.EncodeResponse(results)
 	s.lastSeq, s.lastResp = req.Seq, resp
-	return resp, failed
+	return resp, failed, ferr
+}
+
+func gdsCodes(e *protocol.Error) []int64 {
+	var codes []int64
+	for _, it := range e.Status {
+		if it.Tag == 1 || it.Tag == 18 { // isc_arg_gds, isc_arg_warning
+			codes = append(codes, it.Num)
+		}
+	}
+	return codes
 }
 
 func (srv *Server) execSafe(s *Session, op protocol.Op) (payload []byte, e *protocol.Error) {
@@ -209,6 +236,7 @@ func (srv *Server) attach(r *http.Request, req protocol.Request) []byte {
 	if !ok {
 		return errorResponse(op.Code, protoErr(protocol.CatProtocol, "malformed DPB"))
 	}
+	clean = fb.AddDPBDefault(clean, fb.DPBSetBind, srv.cfg.Bind())
 	if e := srv.reserve(ip); e != nil {
 		srv.log.Warn("attach refused", "reason", "limit", "user", user, "alias", alias, "ip", ip)
 		return errorResponse(op.Code, e)

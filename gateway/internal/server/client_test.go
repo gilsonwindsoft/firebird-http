@@ -143,7 +143,7 @@ func attachClient(t testing.TB, url, db, user, password string) (*client, *proto
 }
 
 func (c *client) startTr() uint32 {
-	return c.must(op(protocol.OpStartTransaction, func(w *protocol.Writer) { w.U32(c.db); w.Bytes(tpbDefault) })).U32()
+	return c.must(op(protocol.OpStartTransaction, func(w *protocol.Writer) { w.U32(c.db); w.Bytes(tpbDefault); w.U32(0) })).U32()
 }
 
 func (c *client) trOp(code uint16, tr uint32) *protocol.Error {
@@ -155,7 +155,12 @@ type prepared struct {
 	stmt    uint32
 	typ     int32
 	out, in []protocol.Var
+	info    []byte // sql_info for prepareInfoItems
 }
+
+// Item list the Devart driver asks after describe (docs/api-surface.md):
+// select, describe_vars, sqlda_seq, relation_alias, describe_end.
+var prepareInfoItems = []byte{4, 7, 9, 25, 8}
 
 func (c *client) prepare(tr uint32, sql string) (prepared, *protocol.Error) {
 	r, e := c.one(op(protocol.OpPrepare, func(w *protocol.Writer) {
@@ -164,11 +169,15 @@ func (c *client) prepare(tr uint32, sql string) (prepared, *protocol.Error) {
 		w.U32(0)
 		w.U16(3)
 		w.Str(sql)
+		w.Bytes(prepareInfoItems)
+		w.U32(1024)
 	}))
 	if e != nil {
 		return prepared{}, e
 	}
-	return prepared{stmt: r.U32(), typ: r.I32(), out: protocol.ReadDesc(r), in: protocol.ReadDesc(r)}, nil
+	p := prepared{stmt: r.U32(), typ: r.I32(), out: protocol.ReadDesc(r), in: protocol.ReadDesc(r)}
+	p.info = r.Bytes()
+	return p, nil
 }
 
 func layoutOf(vars []protocol.Var) protocol.Layout {
@@ -224,6 +233,7 @@ func (c *client) query(tr uint32, sql string, inRow []protocol.Value, batchSize 
 	if kind := r.U8(); kind != 2 {
 		c.t.Fatalf("kind %d", kind)
 	}
+	r.Bytes() // records
 	b := readBatch(r, outL)
 	rows, requests := b.rows, 1
 	for !b.eof {

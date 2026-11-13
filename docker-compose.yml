@@ -1,0 +1,26 @@
+# fbhttp gateway. Before the first start:
+#   1. cp deploy/config.example.json deploy/config.json and edit the aliases
+#   2. put server.crt and server.key in deploy/certs/
+# Then: docker compose up -d
+services:
+  gateway:
+    build: ./gateway
+    image: fbhttp-gateway:latest
+    restart: unless-stopped
+    ports:
+      - "8443:8443"
+    volumes:
+      - ./deploy/config.json:/etc/fbhttp/config.json:ro
+      - ./deploy/certs:/etc/fbhttp/certs:ro
+    # Time to roll back open transactions after SIGTERM (shutdown_grace_seconds + margin).
+    stop_grace_period: 40s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"

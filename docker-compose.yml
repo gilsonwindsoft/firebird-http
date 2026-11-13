@@ -22,9 +22,9 @@ services:
       FBHTTP_MAX_SESSIONS_PER_IP: ${FBHTTP_MAX_SESSIONS_PER_IP:-50}
       FBHTTP_IDLE_TIMEOUT_SECONDS: ${FBHTTP_IDLE_TIMEOUT_SECONDS:-1800}
     ports:
-      # Address the port is published on. 127.0.0.1: nginx installed on this
-      # host. 172.17.0.1: nginx in a container that reaches the host by docker0.
-      - "${FBHTTP_BIND:-127.0.0.1}:8080:8080"
+      # Published on all interfaces so an nginx container reaches it at
+      # 172.17.0.1:8080. Docker bypasses ufw: block 8080 in the external firewall.
+      - "8080:8080"
     # Time to roll back open transactions after SIGTERM (shutdown_grace_seconds + margin).
     stop_grace_period: 40s
     read_only: true

@@ -63,7 +63,7 @@ Pontos que o exemplo já resolve e que não podem faltar numa configuração pr�
 - `client_max_body_size 64m`: igual a `FBHTTP_MAX_BODY_BYTES`.
 - `proxy_http_version 1.1` e `Connection ""`: mantêm a conexão com o gateway aberta entre requisições.
 
-Se o nginx rodar num container (por exemplo, Nginx Proxy Manager) e chegar ao host por `172.17.0.1`, defina `FBHTTP_BIND=172.17.0.1` e use `proxy_pass http://172.17.0.1:8080`. Com o padrão (`127.0.0.1`), a porta não fica visível para containers e o pedido do nginx fica sem resposta.
+A porta 8080 é publicada em todas as interfaces do servidor. Assim, um nginx instalado no servidor usa `proxy_pass http://127.0.0.1:8080`, e um nginx em container usa `proxy_pass http://172.17.0.1:8080`. **A porta publicada pelo Docker ignora o `ufw`:** bloqueie a 8080 no firewall externo (da nuvem ou do roteador). Sem isso, o gateway fica acessível pela internet em HTTP sem TLS.
 
 Se o nginx estiver em outro host, publique a porta como `"8080:8080"` no `docker-compose.yml`, libere no firewall só para o IP do nginx e coloque esse IP em `FBHTTP_TRUSTED_PROXIES`.
 

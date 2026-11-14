@@ -1,7 +1,9 @@
 unit fbhttp.Config;
 
 { Client configuration: ws-fbclient.ini in the DLL folder, overridden by
-  FBHTTP_* environment variables. ASCII only.
+  FBHTTP_* environment variables. Both are optional: without a url, the
+  gateway is https://<host> taken from the connection's Database
+  (host:alias or host/port:path). ASCII only.
 
   [gateway]
   url=https://gateway.example.com:8443
@@ -34,6 +36,9 @@ type
 
 function LoadConfig(const IniPath: string; const Env: TEnvFunc): TFbHttpConfig;
 function LoadDefaultConfig: TFbHttpConfig;
+// 'https://host' from a Database string 'host[/port]:path', or '' when it
+// has no host (local path, C:\ path, URL forms).
+function GatewayUrlFromDatabase(const Database: string): string;
 
 implementation
 
@@ -94,14 +99,39 @@ begin
   Result := '';
   lower := LowerCase(Url);
   if Url = '' then
-    Result := Format('ws-fbclient: gateway URL not configured. Set url= in [gateway] of %s ' +
-      'or the FBHTTP_URL environment variable.', [IniPath])
+    Result := Format('ws-fbclient: gateway URL not configured. Use host:database in the ' +
+      'connection Database, url= in [gateway] of %s or the FBHTTP_URL environment variable.', [IniPath])
   else if lower.StartsWith('http://') and not AllowPlainHttp then
     Result := 'ws-fbclient: plain HTTP refused. Use https:// or set allow_plain_http=1 (test networks only).'
   else if not lower.StartsWith('https://') and not lower.StartsWith('http://') then
     Result := 'ws-fbclient: gateway URL must start with https://'
   else if (FetchRows < 1) or (ConnectTimeoutMs < 1) or (ResponseTimeoutMs < 1) or (InlineBlobBytes < 0) then
     Result := 'ws-fbclient: invalid numeric value in configuration';
+end;
+
+function GatewayUrlFromDatabase(const Database: string): string;
+var
+  p, i: Integer;
+  host: string;
+begin
+  Result := '';
+  p := Pos(':', Database);
+  // No host, or a drive letter (C:\data\x.fdb).
+  if p <= 2 then
+    Exit;
+  // URL forms (inet://host/path) are not host:path.
+  if Copy(Database, p + 1, 2) = '//' then
+    Exit;
+  host := Copy(Database, 1, p - 1);
+  i := Pos('/', host);
+  if i > 0 then
+    host := Copy(host, 1, i - 1); // host/port: the port is Firebird's, HTTPS uses 443
+  if host = '' then
+    Exit;
+  for i := 1 to Length(host) do
+    if not CharInSet(host[i], ['a'..'z', 'A'..'Z', '0'..'9', '.', '-']) then
+      Exit;
+  Result := 'https://' + host;
 end;
 
 function LoadDefaultConfig: TFbHttpConfig;

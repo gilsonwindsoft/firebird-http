@@ -65,21 +65,28 @@ Saída: `client\bin\ws-fbclient\ws-fbclient.dll` (Win32) e `ws-fbclient.example.
 
 ## 3. Conectar uma estação
 
-### 3.1 Copie a DLL e o `.ini`
+### 3.1 Copie a DLL e diga onde está o gateway
 
-Copie para a **pasta da aplicação** (a pasta do `.exe`):
+Copie a `ws-fbclient.dll` para a **pasta da aplicação** (a pasta do `.exe`). A DLL precisa saber o endereço do gateway. Há dois jeitos:
 
-- `ws-fbclient.dll`
-- `ws-fbclient.ini`, feito a partir de `ws-fbclient.example.ini`
+**A. Pelo `Database` da conexão (sem `.ini`).** Use o endereço do gateway como servidor:
 
-O `.ini` precisa ficar na mesma pasta da DLL. O mínimo é a URL pública do nginx, sem barra no final:
+```ini
+Database=fb.windsoft.me:ws-windsoft
+```
+
+A DLL chama `https://fb.windsoft.me` e o gateway abre `ws-windsoft` no Firebird dele. Uma porta no `Database` (`fb.windsoft.me/3151:...`) é ignorada: o HTTPS usa sempre a 443.
+
+**B. Pelo `ws-fbclient.ini` (o `Database` não muda).** Crie o `ws-fbclient.ini` na mesma pasta da DLL, a partir de `ws-fbclient.example.ini`:
 
 ```ini
 [gateway]
-url=https://gateway.exemplo.com.br
+url=https://fb.windsoft.me
 ```
 
-Os outros itens (timeouts, `fetch_rows`, `inline_blob_bytes`) têm padrão e podem ficar de fora. Cada item também pode vir de uma variável de ambiente, por exemplo `FBHTTP_URL`.
+Sem barra no final. Com o `.ini`, o servidor que vem no `Database` é ignorado, e a aplicação pode continuar com `localhost:ws-windsoft`. Use este jeito quando não puder mudar o `Database` da aplicação.
+
+Se existir `url` no `.ini` (ou na variável `FBHTTP_URL`), ela vale. Os outros itens do `.ini` (timeouts, `fetch_rows`, `inline_blob_bytes`) têm padrão e podem ficar de fora.
 
 ### 3.2 Aponte a aplicação para a DLL
 
@@ -101,19 +108,20 @@ ren fbclient.dll fbclient_nativo.dll
 copy /y ws-fbclient.dll fbclient.dll
 ```
 
-Isso vale só para essa pasta. O `.ini` continua com o nome `ws-fbclient.ini`, mesmo com a DLL renomeada. Para voltar: `del fbclient.dll` e `ren fbclient_nativo.dll fbclient.dll`.
+Isso vale só para essa pasta. Se usar o `.ini`, ele continua com o nome `ws-fbclient.ini`, mesmo com a DLL renomeada. Para voltar: `del fbclient.dll` e `ren fbclient_nativo.dll fbclient.dll`.
 
 **No IBExpert**, no registro do banco, preencha "Client library file" com o caminho completo da `ws-fbclient.dll`.
 
 ### 3.3 O `Database`
 
-O `Database` pode continuar como está hoje. O gateway descarta o servidor que vem na frente e abre o resto no `FBHTTP_FIREBIRD_HOST`:
+O gateway descarta o servidor que vem na frente e abre o resto no `FBHTTP_FIREBIRD_HOST`:
 
-| `Database` na estação | Aberto pelo gateway |
-|---|---|
-| `localhost:ws-servico-trunk` | `FIREBIRD_HOST:ws-servico-trunk` (alias do `databases.conf`) |
-| `servidor/3050:/dados/erp.fdb` | `FIREBIRD_HOST:/dados/erp.fdb` |
-| `erp` (nome em `FBHTTP_ALIASES`) | o destino configurado para `erp` |
+| `Database` na estação | Gateway chamado | Aberto pelo gateway |
+|---|---|---|
+| `fb.windsoft.me:ws-windsoft` (sem `.ini`) | `https://fb.windsoft.me` | `FIREBIRD_HOST:ws-windsoft` (alias do `databases.conf`) |
+| `localhost:ws-windsoft` (com `.ini`) | `url` do `.ini` | `FIREBIRD_HOST:ws-windsoft` |
+| `servidor/3050:/dados/erp.fdb` (com `.ini`) | `url` do `.ini` | `FIREBIRD_HOST:/dados/erp.fdb` |
+| `erp` (com `.ini`, nome em `FBHTTP_ALIASES`) | `url` do `.ini` | o destino configurado para `erp` |
 
 Usuário, senha, role e charset continuam os mesmos do Firebird. O gateway os repassa ao servidor.
 
@@ -123,7 +131,7 @@ Abra a aplicação. No servidor, `docker compose logs -f` deve mostrar `session 
 
 | Erro na estação | Causa |
 |---|---|
-| `ws-fbclient: gateway URL not configured` | O `ws-fbclient.ini` não está na pasta da DLL ou não tem `url=`. |
+| `ws-fbclient: gateway URL not configured` | O `Database` não tem servidor (`servidor:banco`) e não há `ws-fbclient.ini` com `url=` na pasta da DLL. |
 | Erro de rede ou "conexão perdida" | URL errada, nginx parado ou porta 443 bloqueada. Teste o `/healthz` no navegador da estação. |
 | Erro de certificado | O certificado do nginx não é confiável para o Windows. Use um certificado válido. |
 | `database ... is not allowed by this gateway` | O `Database` tem um segundo host, caminho UNC ou URL (`inet://`). Use `servidor:caminho` ou `servidor:alias`. |

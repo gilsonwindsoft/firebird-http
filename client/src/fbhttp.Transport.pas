@@ -83,9 +83,16 @@ end;
 
 procedure TFbTransport.ValidateCertificate(const Sender: TObject; const ARequest: TURLRequest;
   const Certificate: TCertificate; var Accepted: Boolean);
+var
+  reasons: THTTPSecureFailureReasons;
 begin
-  // Called only when Windows rejected the certificate.
-  Accepted := FConfig.AllowInvalidCertificate;
+  // Delphi also calls this before each request on a certificate Windows
+  // accepted (no failure reasons). A revocation check that could not reach
+  // the CRL/OCSP server is accepted, as browsers do; a revoked, untrusted,
+  // expired or wrong-name certificate is not.
+  reasons := (Sender as THTTPClient).SecureFailureReasons;
+  Accepted := (reasons = []) or (reasons = [THTTPSecureFailureReason.CertRevFailed]) or
+    FConfig.AllowInvalidCertificate;
 end;
 
 function TFbTransport.Post(const Body: TBytes): TBytes;

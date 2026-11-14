@@ -12,6 +12,7 @@ type
     [Test] procedure MissingUrlNamesTheIniFile;
     [Test] procedure EnvironmentWinsOverIni;
     [Test] procedure PlainHttpNeedsOptIn;
+    [Test] procedure GatewayFromDatabaseHost;
   end;
 
 implementation
@@ -67,6 +68,17 @@ begin
   Assert.Contains(c.Validate, 'plain HTTP refused');
   c.AllowPlainHttp := True;
   Assert.AreEqual('', c.Validate);
+end;
+
+procedure TConfigTests.GatewayFromDatabaseHost;
+begin
+  Assert.AreEqual('https://fb.windsoft.me', GatewayUrlFromDatabase('fb.windsoft.me:ws-windsoft'));
+  Assert.AreEqual('https://fb.windsoft.me', GatewayUrlFromDatabase('fb.windsoft.me/3151:/data/x.fdb'));
+  Assert.AreEqual('https://10.0.0.5', GatewayUrlFromDatabase('10.0.0.5:C:\data\x.fdb'));
+  Assert.AreEqual('', GatewayUrlFromDatabase('ws-windsoft'));
+  Assert.AreEqual('', GatewayUrlFromDatabase('C:\data\x.fdb'));
+  Assert.AreEqual('', GatewayUrlFromDatabase('inet://fb.windsoft.me/x.fdb'));
+  Assert.AreEqual('', GatewayUrlFromDatabase(':x.fdb'));
 end;
 
 initialization

@@ -568,14 +568,17 @@ begin
       a: TFbAttachment;
       r: TFbReader;
     begin
-      cfg := LoadDefaultConfig;
-      msg := RawByteString(cfg.Validate);
-      if msg <> '' then
-        raise EFbCode.Create(isc_random, string(msg));
       if namelen > 0 then
         SetString(dbname, name, namelen)
       else
         dbname := System.AnsiStrings.StrPas(name);
+      cfg := LoadDefaultConfig;
+      // No url in the .ini or environment: the Database host is the gateway.
+      if cfg.Url = '' then
+        cfg.Url := GatewayUrlFromDatabase(string(dbname));
+      msg := RawByteString(cfg.Validate);
+      if msg <> '' then
+        raise EFbCode.Create(isc_random, string(msg));
       w.Str(dbname);
       w.Bytes(dpb, Max(dpblen, 0));
       a := TFbAttachment.Create(cfg);

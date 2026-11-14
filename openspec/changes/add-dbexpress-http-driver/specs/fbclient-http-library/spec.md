@@ -22,10 +22,14 @@ A biblioteca SHALL ser uma DLL Windows 32 bits que exporta, com o mesmo nome, a 
 - **THEN** a função devolve um status vector de erro com mensagem "not supported by ws-fbclient", e o processo não trava
 
 ### Requirement: Configuração do gateway
-A biblioteca SHALL ler a URL do gateway, as opções de TLS e os timeouts de um arquivo de configuração na pasta da DLL e de variáveis de ambiente. Variáveis de ambiente SHALL ter prioridade sobre o arquivo. O usuário, a senha, a role e o charset SHALL vir dos parâmetros que o driver já envia na conexão.
+A biblioteca SHALL ler a URL do gateway, as opções de TLS e os timeouts de um arquivo de configuração opcional na pasta da DLL e de variáveis de ambiente. Variáveis de ambiente SHALL ter prioridade sobre o arquivo. Sem URL configurada, a biblioteca SHALL usar `https://` mais o servidor do `Database` (`servidor:banco`). O usuário, a senha, a role e o charset SHALL vir dos parâmetros que o driver já envia na conexão.
+
+#### Scenario: Gateway pelo Database
+- **WHEN** não há URL configurada e o `Database` é `fb.exemplo.com:erp`
+- **THEN** a biblioteca chama o gateway em `https://fb.exemplo.com`
 
 #### Scenario: URL ausente
-- **WHEN** a conexão abre e não há URL do gateway configurada
+- **WHEN** a conexão abre, não há URL do gateway configurada e o `Database` não tem servidor
 - **THEN** a conexão falha com uma mensagem que diz onde configurar a URL
 
 ### Requirement: Mesmo comportamento do cliente nativo

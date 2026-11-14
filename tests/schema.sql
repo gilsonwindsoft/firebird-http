@@ -39,7 +39,7 @@ COMMIT;
 /* Row 1: typical values. Row 2: limits. Row 3: NULL in every column.
    Row 4: empty strings (distinct from NULL). */
 INSERT INTO T_TYPES VALUES (1, 12, 123456, 1234567890123, 1234.56, 12345678901234.5678, 123456789012.345678,
-  1.5, 3.141592653589793, 'abc', 'texto simples', 'acentuacao: ' || _UTF8 'ação café', _WIN1252 'pão', 'none',
+  1.5, 3.141592653589793, 'abc', 'texto simples', 'acentuacao: ' || _UTF8 x'61C3A7C3A36F20636166C3A9' /* "acao cafe" with accents, UTF-8 */, _WIN1252 x'70E36F' /* "pao" with accent, WIN1252 */, 'none',
   x'000102030405060708090A0B0C0D0E0F', DATE '2026-11-13', TIME '13:45:30.1234', TIMESTAMP '2026-11-13 13:45:30.1234',
   TRUE, 'blob de texto', x'DEADBEEF', x'0102');
 INSERT INTO T_TYPES VALUES (2, -32768, -2147483648, -9223372036854775808, -9999999.99, -99999999999999.9999,

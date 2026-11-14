@@ -4,3 +4,4 @@ tests/protocol-fixtures/
 *.dll
 *.log
 .env
+client/compare/run/

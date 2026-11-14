@@ -44,12 +44,23 @@ func TestResponseRoundTrip(t *testing.T) {
 
 func sampleError() *Error {
 	return &Error{Category: CatFirebird, SQLCode: -803,
-		Status: []StatusItem{{Tag: 1, Num: 335544665}, {Tag: ArgString, Str: "PK_T"}, {Tag: ArgString, Str: "T"}, {Tag: ArgSQLState, Str: "23000"}},
-		Messages: []string{"violation of PRIMARY or UNIQUE KEY constraint \"PK_T\" on table \"T\""}}
+		Status:   []StatusItem{{Tag: 1, Num: 335544665}, {Tag: ArgString, Str: "PK_T"}, {Tag: ArgString, Str: "T"}, {Tag: ArgSQLState, Str: "23000"}},
+		Messages: []string{"violation of PRIMARY or UNIQUE KEY constraint \"PK_T\" on table \"T\""},
+		SQLText:  "Attempt to store duplicate value (visible to active transactions) in unique index \"PK_T\""}
 }
 
 func TestErrorRoundTrip(t *testing.T) {
 	in := sampleError()
+	out, err := DecodeError(EncodeError(in))
+	if err != nil || !reflect.DeepEqual(in, out) {
+		t.Fatalf("got %+v, %v", out, err)
+	}
+}
+
+// An error block from a gateway that predates SQLText still decodes.
+func TestErrorWithoutSQLText(t *testing.T) {
+	in := sampleError()
+	in.SQLText = ""
 	out, err := DecodeError(EncodeError(in))
 	if err != nil || !reflect.DeepEqual(in, out) {
 		t.Fatalf("got %+v, %v", out, err)

@@ -152,6 +152,7 @@ begin
   Assert.AreEqual('PK_T', string(e.Status[1].Str));
   Assert.AreEqual('23000', string(e.Status[3].Str));
   Assert.IsTrue(e.FirstMessage.StartsWith('violation of PRIMARY'));
+  Assert.IsTrue(string(e.SQLText).StartsWith('Attempt to store duplicate value'));
 end;
 
 procedure TProtocolTests.GoFixtureRow;

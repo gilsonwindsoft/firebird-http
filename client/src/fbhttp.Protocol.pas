@@ -118,6 +118,8 @@ type
     SQLCode: Integer;
     Status: TArray<TFbStatusItem>;
     Messages: TArray<RawByteString>;
+    // isc_sql_interprete(SQLCode) from the gateway; empty from older gateways.
+    SQLText: RawByteString;
     function FirstMessage: string;
   end;
 
@@ -446,6 +448,9 @@ begin
       Break;
     E.Messages := E.Messages + [r.Str];
   end;
+  E.SQLText := '';
+  if not r.Err and (r.Remaining > 0) then
+    E.SQLText := r.Str;
   Result := not r.Err;
 end;
 

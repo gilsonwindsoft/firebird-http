@@ -231,6 +231,9 @@ type Error struct {
 	SQLCode  int32
 	Status   []StatusItem // without the terminating ArgEnd
 	Messages []string
+	// SQLText is isc_sql_interprete(SQLCode). Optional trailing field: older
+	// peers neither send nor read it.
+	SQLText string
 }
 
 func (e *Error) Error() string {
@@ -257,6 +260,9 @@ func EncodeError(e *Error) []byte {
 	for _, m := range e.Messages {
 		w.Str(m)
 	}
+	if e.SQLText != "" {
+		w.Str(e.SQLText)
+	}
 	return w.B
 }
 
@@ -279,6 +285,9 @@ func DecodeError(b []byte) (*Error, error) {
 	n := int(r.U16())
 	for i := 0; i < n && r.Err == nil; i++ {
 		e.Messages = append(e.Messages, r.Str())
+	}
+	if r.Err == nil && len(r.B) > 0 {
+		e.SQLText = r.Str()
 	}
 	return e, r.Err
 }

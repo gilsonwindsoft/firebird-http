@@ -389,6 +389,9 @@ func TestPrimaryKeyViolationKeepsSession(t *testing.T) {
 	if err == nil || err.Category != protocol.CatFirebird || err.SQLCode != -803 || len(err.Messages) == 0 {
 		t.Fatalf("got %+v", err)
 	}
+	if !strings.HasPrefix(err.SQLText, "Invalid insert or update value") {
+		t.Fatalf("SQLText = %q", err.SQLText)
+	}
 	if rows, _ := c.query(tr, "SELECT 1 FROM RDB$DATABASE", nil, 1); len(rows) != 1 {
 		t.Fatal("session not usable after error")
 	}

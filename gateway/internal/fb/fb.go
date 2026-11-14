@@ -77,6 +77,10 @@ func (s *status) failed() *protocol.Error {
 	for C.fb_interpret(buf, 1024, pv) > 0 {
 		e.Messages = append(e.Messages, C.GoString(buf))
 	}
+	if e.SQLCode != 0 {
+		C.isc_sql_interprete(C.short(e.SQLCode), buf, 1024)
+		e.SQLText = C.GoString(buf)
+	}
 	return e
 }
 

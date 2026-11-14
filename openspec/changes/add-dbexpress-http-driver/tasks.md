@@ -36,18 +36,18 @@
 ## 5. DLL: base, transporte e conexão
 
 - [x] 5.1 Implementar leitura de `ws-fbclient.ini` e de variáveis `FBHTTP_*` com prioridade para o ambiente; verificar com testes DUnitX, incluindo URL ausente
-- [ ] 5.2 (compila; falta testar contra o gateway) Implementar transporte WinHTTP (sessão por processo, keep-alive por conexão, HTTPS com validação de certificado, opção explícita para HTTP ou certificado não confiável, timeouts, repetição com mesmo `seq`); verificar com testes contra o gateway com certificado válido, certificado autoassinado e gateway desligado
+- [x] 5.2 Implementar transporte WinHTTP (sessão por processo, keep-alive por conexão, HTTPS com validação de certificado, opção explícita para HTTP ou certificado não confiável, timeouts, repetição com mesmo `seq`); verificar com testes contra o gateway com certificado válido, certificado autoassinado e gateway desligado
 - [x] 5.3 Implementar tabela de handles e barreira de exceção em cada export (D3, D7), com stubs "not supported by ws-fbclient" para todas as funções fora de `docs/api-surface.md`; verificar com teste de handle liberado que devolve o status de handle inválido sem violação de acesso
-- [ ] 5.4 (compila; falta testar com o driver e o gateway) Implementar `isc_attach_database`, `isc_detach_database`, `isc_database_info`, keep-alive em segundo plano e conversão de falha de rede para `isc_network_error`; verificar com `TSQLConnection` Devart que abre e fecha pelo gateway, que a `ws-fbclient.dll` não importa nem carrega o `fbclient.dll` (conferir módulos do processo) e que uma conexão nativa e uma HTTP funcionam abertas ao mesmo tempo
+- [x] 5.4 Implementar `isc_attach_database`, `isc_detach_database`, `isc_database_info`, keep-alive em segundo plano e conversão de falha de rede para `isc_network_error`; verificar com `TSQLConnection` Devart que abre e fecha pelo gateway, que a `ws-fbclient.dll` não importa nem carrega o `fbclient.dll` (conferir módulos do processo) e que uma conexão nativa e uma HTTP funcionam abertas ao mesmo tempo
 - [x] 5.5 Implementar status vector local, `fb_interpret`, `isc_interprete`, `isc_sql_interprete` e `isc_sqlcode`; verificar com teste de erro de sintaxe que compara a mensagem da exceção Devart com a do cliente nativo
 
 ## 6. DLL: transações, comandos e BLOBs
 
-- [ ] 6.1 (compila; falta testar com o driver e o gateway) Implementar `isc_start_transaction`/`isc_start_multiple`, commit, rollback, retenção e `isc_transaction_info`; verificar com teste DUnitX de rollback e de duas transações abertas na mesma conexão
-- [ ] 6.2 (compila; falta testar com o driver e o gateway) Implementar allocate/prepare/describe/describe_bind/sql_info com cache local e chamadas adiadas de free e set_cursor_name; verificar com teste que conta requisições HTTP de um prepare + execute + close (alvo: 1 requisição para o prepare, 1 para o execute com primeiro lote)
-- [ ] 6.3 (compila; falta testar com o driver e o gateway) Implementar execute, execute2, execute immediate e fetch a partir do lote local, com escrita em `XSQLDA` num único módulo com checagem de limites; verificar com teste de 10 000 linhas e lote 500 com no máximo 21 requisições e com FastMM em full debug sem erros
-- [ ] 6.4 (compila; falta testar com o driver e o gateway) Implementar BLOB (open2 com conteúdo embutido, get_segment local, leitura em blocos, create2, put_segment com buffer, close, cancel, blob_info); verificar com teste de BLOB de 2 KB em 1 requisição e de 50 MB com hash igual
-- [ ] 6.5 Verificar uso por várias threads: duas threads com duas conexões consultando ao mesmo tempo por 1 minuto sem erro nem bloqueio
+- [x] 6.1 Implementar `isc_start_transaction`/`isc_start_multiple`, commit, rollback, retenção e `isc_transaction_info`; verificar com teste DUnitX de rollback e de duas transações abertas na mesma conexão
+- [x] 6.2 Implementar allocate/prepare/describe/describe_bind/sql_info com cache local e chamadas adiadas de free e set_cursor_name; verificar com teste que conta requisições HTTP de um prepare + execute + close (alvo: 1 requisição para o prepare, 1 para o execute com primeiro lote)
+- [x] 6.3 Implementar execute, execute2, execute immediate e fetch a partir do lote local, com escrita em `XSQLDA` num único módulo com checagem de limites; verificar com teste de 10 000 linhas e lote 500 com no máximo 21 requisições e com FastMM em full debug sem erros
+- [x] 6.4 Implementar BLOB (open2 com conteúdo embutido, get_segment local, leitura em blocos, create2, put_segment com buffer, close, cancel, blob_info); verificar com teste de BLOB de 2 KB em 1 requisição e de 50 MB com hash igual
+- [x] 6.5 Verificar uso por várias threads: duas threads com duas conexões consultando ao mesmo tempo por 1 minuto sem erro nem bloqueio
 
 ## 7. Integração e entrega
 

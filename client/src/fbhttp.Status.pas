@@ -46,6 +46,8 @@ function Guarded(st: PISC_STATUS; const Body: TProc): ISC_STATUS;
 // fb_interpret / isc_interprete: next message of the vector at pp^.
 function InterpretNext(Buf: PAnsiChar; BufLen: Integer; pp: PPISC_STATUS): Integer;
 function SqlCodeOf(st: PISC_STATUS): Integer;
+// isc_sql_interprete text the gateway sent for this SQLCODE; empty if none yet.
+function SqlInterpreteText(SQLCode: Integer): RawByteString;
 
 implementation
 
@@ -70,6 +72,7 @@ type
 var
   GLock: TCriticalSection;
   GThreads: TObjectDictionary<Cardinal, TThreadError>;
+  GSqlTexts: TDictionary<Integer, RawByteString>; // SQLCODE -> isc_sql_interprete text, under GLock
 
 constructor TThreadError.Create;
 begin
@@ -159,6 +162,8 @@ begin
     t.Strings.Clear;
     SetLength(t.Msgs, 0);
     t.SQLCode := E.SQLCode;
+    if E.SQLText <> '' then
+      GSqlTexts.AddOrSetValue(E.SQLCode, E.SQLText);
     t.FirstCode := 0;
     v := st;
     n := 0;
@@ -328,11 +333,24 @@ begin
   end;
 end;
 
+function SqlInterpreteText(SQLCode: Integer): RawByteString;
+begin
+  GLock.Enter;
+  try
+    if not GSqlTexts.TryGetValue(SQLCode, Result) then
+      Result := '';
+  finally
+    GLock.Leave;
+  end;
+end;
+
 initialization
   GLock := TCriticalSection.Create;
+  GSqlTexts := TDictionary<Integer, RawByteString>.Create;
   GThreads := TObjectDictionary<Cardinal, TThreadError>.Create([doOwnsValues]);
 
 finalization
+  GSqlTexts.Free;
   GThreads.Free;
   GLock.Free;
 end.

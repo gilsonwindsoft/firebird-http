@@ -1617,7 +1617,10 @@ var
 begin
   if (buf = nil) or (len <= 0) then
     Exit;
-  s := AnsiString(Format('SQL error code = %d', [sqlcode]));
+  // Text from the gateway (firebird.msg on the server), cached per SQLCODE.
+  s := AnsiString(SqlInterpreteText(sqlcode));
+  if s = '' then
+    s := AnsiString(Format('SQL error code = %d', [sqlcode]));
   System.AnsiStrings.StrLCopy(buf, PAnsiChar(s), len - 1);
 end;
 

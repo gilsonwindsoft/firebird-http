@@ -58,7 +58,10 @@ status vector:     repetir até tag 0
   demais tags           i64 valor
 u16 n_messages
 n × str            linhas produzidas por fb_interpret, em ordem
+str sql_text       opcional: isc_sql_interprete(sqlcode); ausente se vazio
 ```
+
+O `sql_text` só existe se ainda houver bytes no bloco depois das mensagens. Gateways antigos não o enviam e DLLs antigas o ignoram. A DLL guarda o texto por SQLCODE e o devolve em `isc_sql_interprete`.
 
 Erro de categoria 2 (sessão) invalida a sessão. As demais não.
 

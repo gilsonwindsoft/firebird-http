@@ -29,7 +29,7 @@ services:
       # Host folder with aliases.conf, mounted at /config. Mount the folder, not
       # the file: editors save by replacing the file and a single-file mount
       # keeps showing the old content.
-      - ${FBHTTP_CONFIG_DIR:-./config}:/config:ro
+      - ${FBHTTP_CONFIG_DIR:-/dados/docker/firebird/config}:/config:ro
     ports:
       # Published on all interfaces so an nginx container reaches it at
       # 172.17.0.1:8080. Docker bypasses ufw: block 8080 in the external firewall.

@@ -79,6 +79,9 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	defer stop()
 	go srv.RunReaper(ctx)
 	if cfg.AliasesFile != "" {
+		if _, err := os.Stat(cfg.AliasesFile); err != nil {
+			log.Warn("aliases file not readable; starting without aliases, it is reread every 60 s", "file", cfg.AliasesFile, "error", err.Error())
+		}
 		go cfg.WatchAliases(ctx, config.AliasReloadInterval, log)
 	}
 	if os.Getenv("FBHTTP_ALIASES") != "" {

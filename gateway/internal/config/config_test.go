@@ -163,8 +163,17 @@ func TestAliasesFileLoad(t *testing.T) {
 	if _, _, err := loadWithFile(t, "", map[string]string{"FBHTTP_FIREBIRD_HOST": "fb"}); err != nil {
 		t.Fatalf("empty file with host: %v", err)
 	}
-	if _, err := Load("", envOf(map[string]string{"FBHTTP_PLAIN_HTTP": "1", "FBHTTP_ALIASES_FILE": "/missing/aliases.conf"})); err == nil || !strings.Contains(err.Error(), "aliases_file") {
-		t.Fatalf("missing file: %v", err)
+	if _, err := Load("", envOf(map[string]string{"FBHTTP_PLAIN_HTTP": "1", "FBHTTP_ALIASES_FILE": "/missing/aliases.conf"})); err == nil || !strings.Contains(err.Error(), "firebird_host or aliases") {
+		t.Fatalf("missing file without host: %v", err)
+	}
+	missing := filepath.Join(t.TempDir(), "aliases.conf")
+	mc, err := Load("", envOf(map[string]string{"FBHTTP_PLAIN_HTTP": "1", "FBHTTP_FIREBIRD_HOST": "fb", "FBHTTP_ALIASES_FILE": missing}))
+	if err != nil || mc.AliasCount() != 0 {
+		t.Fatalf("missing file with host: %v", err)
+	}
+	writeAliases(t, missing, "a = fb:/a.fdb\n")
+	if _, _, changed, err := mc.ReloadAliases(); err != nil || !changed || mc.AliasCount() != 1 {
+		t.Fatalf("file created later: %v %v %d", err, changed, mc.AliasCount())
 	}
 	dir := t.TempDir()
 	af := filepath.Join(dir, "aliases.conf")

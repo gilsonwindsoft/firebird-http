@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/netip"
 	"os"
@@ -105,14 +106,17 @@ func Load(path string, env func(string) string) (*Config, error) {
 		if len(c.Aliases) > 0 {
 			return nil, errors.New("invalid configuration: aliases_file and aliases: use only one")
 		}
+		// A missing file starts with no aliases; WatchAliases loads it once it appears.
 		b, err := os.ReadFile(c.AliasesFile)
-		if err != nil {
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("config: aliases_file: %w", err)
 		}
-		if c.Aliases, err = parseAliases(b); err != nil {
-			return nil, fmt.Errorf("config: aliases_file %s: %w", c.AliasesFile, err)
+		if err == nil {
+			if c.Aliases, err = parseAliases(b); err != nil {
+				return nil, fmt.Errorf("config: aliases_file %s: %w", c.AliasesFile, err)
+			}
+			c.lastFile = b
 		}
-		c.lastFile = b
 	}
 	if err := c.validate(); err != nil {
 		return &c, err

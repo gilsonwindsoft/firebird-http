@@ -113,7 +113,7 @@ Teste a partir de outra máquina: `curl -i https://gateway.exemplo.com.br/health
 
 1. Crie um recurso do tipo **Docker Compose** apontando para este repositório (branch `main`, arquivo `docker-compose.yml`).
 2. Em **Environment Variables**, defina `FBHTTP_FIREBIRD_HOST` (e as opcionais, se precisar).
-   Para aliases, defina `FBHTTP_ALIASES_FILE=/config/aliases.conf` e `FBHTTP_CONFIG_DIR` com uma pasta persistente do servidor onde fica o `aliases.conf`. Edite o arquivo nessa pasta pelo SSH; o gateway aplica em até 60 segundos, sem novo deploy.
+   Para aliases, defina `FBHTTP_ALIASES_FILE=/config/aliases.conf`. O Coolify ignora `FBHTTP_CONFIG_DIR`: ele troca o caminho do volume por `/data/coolify/applications/<uuid>/config` antes de ler as variáveis, e a origem não pode ser editada em **Persistent Storage**. Coloque o `aliases.conf` nessa pasta, ou use um caminho fixo no compose que o Coolify lê. Edite o arquivo pelo SSH; o gateway aplica em até 60 segundos, sem novo deploy.
 3. No serviço `gateway`, defina o domínio com a porta do container: `https://gateway.exemplo.com.br:8080`. O proxy do Coolify cuida do certificado e encaminha para a porta 8080.
 4. Faça o deploy. O container deve ficar "healthy" e `https://gateway.exemplo.com.br/healthz` deve responder `204`.
 

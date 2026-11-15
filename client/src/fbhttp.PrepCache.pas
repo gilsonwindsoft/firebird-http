@@ -8,7 +8,7 @@ unit fbhttp.PrepCache;
 interface
 
 uses
-  System.Generics.Collections, fbhttp.Protocol;
+  System.SysUtils, System.Generics.Collections, fbhttp.Protocol;
 
 type
   TFbPrepEntry = class
@@ -37,9 +37,6 @@ type
   end;
 
 implementation
-
-uses
-  System.SysUtils;
 
 constructor TFbPrepCache.Create(Capacity: Integer);
 begin

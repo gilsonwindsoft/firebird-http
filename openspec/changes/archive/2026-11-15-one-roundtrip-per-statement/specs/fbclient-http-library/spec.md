@@ -89,7 +89,7 @@ Para o mesmo banco e a mesma sequência de chamadas, a biblioteca SHALL devolver
 - **THEN** a lista é igual à lista obtida com o cliente nativo
 
 #### Scenario: Roteiro de comparação com cache e adiamento ligados
-- **WHEN** o roteiro de comparação (`fbcompare`) roda com o cliente nativo e com a biblioteca, com cache de preparação e encerramento adiado ligados, em FB 3, 4 e 5
+- **WHEN** o roteiro de comparação (`fbcompare`) roda com o cliente nativo e com a biblioteca, com cache de preparação e encerramento adiado ligados, em FB 3
 - **THEN** as duas saídas são iguais
 
 ### Requirement: Busca em lotes

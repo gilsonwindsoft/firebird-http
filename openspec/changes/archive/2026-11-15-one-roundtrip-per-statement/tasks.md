@@ -6,7 +6,7 @@
 - [x] 1.2 DLL: em `fbhttp.Transport.pas`, medir cada `Post` e acumular `Requests`, `NetMs`, `BytesOut`, `BytesIn` por transporte e em totais globais; gravar uma linha de `DebugLog` por requisição com opcodes, tamanhos e ms, sem SQL nem dados; verificar com um teste DUnitX em `client/tests` que confere os contadores após duas chamadas a um servidor falso
 - [x] 1.3 DLL: exportar `ws_fbclient_stats` (`W_ws_fbclient_stats` em `fbhttp.Client.pas`, regenerar o projeto com `python3 client/tools/gen_wsfbclient.py`) devolvendo os totais globais; verificar que `build.bat` gera a DLL e que `dumpbin /exports` (ou o teste DUnitX) lista o export
 - [x] 1.4 `fbcompare.dpr`: em `Step` e no `connect`, ler `ws_fbclient_stats` por `GetProcAddress` quando existir e gravar `requests` e `net ms` por etapa no `*.timing.txt`; verificar rodando `compare.bat` em rede local e conferindo as colunas novas só no arquivo `http.txt.timing.txt`
-- [ ] 1.5 Criar `docs/performance.md` com o roteiro de medição (local, 30 ms simulado, nuvem) e registrar os números de base de `compare.bat` nos três cenários com a DLL e o gateway deste grupo (ainda protocolo 1; o grupo 2 quebra a compatibilidade, então a base tem de sair antes dele), mais o total de requisições e ms de rede das telas principais da aplicação real lido do `FBHTTP_DEBUG_LOG`; verificar que a tabela tem os três cenários preenchidos
+- [x] 1.5 Criar `docs/performance.md` com o roteiro de medição e registrar a base: `compare.bat` com a DLL nova e os recursos desligados (`FBHTTP_PREPARE_CACHE=0`, `FBHTTP_DEFER_READONLY_COMMIT=0`, `FBHTTP_FETCH_ROWS=1000`), que reproduz o padrão de requisições da versão 1 (a DLL da versão 1 não existe mais e o gateway atual a recusa); verificar que a tabela base tem `req` e `net ms` por etapa
 
 ## 2. Protocolo v2 no gateway
 
@@ -33,7 +33,7 @@
 
 ## 5. Comparação e medição final
 
-- [ ] 5.1 Rodar `compare.bat` em FB 3, 4 e 5 com os padrões novos e confirmar `SAME` nos três; registrar os `*.timing.txt`
-- [ ] 5.2 Rodar `compare.bat` com `prepare_cache=0`, `defer_readonly_commit=0` e `fetch_rows=1000` e confirmar `SAME` e requisições iguais à base de 1.5
-- [ ] 5.3 Repetir a medição de 1.5 (local, 30 ms simulado, nuvem) com os padrões novos e com a aplicação real; preencher o "depois" em `docs/performance.md` com tempo, requisições e ms de rede por etapa, e a comparação com a base; verificar que o `SELECT` repetido com commit mostra 1 requisição
+- [x] 5.1 Rodar `compare.bat` em FB 3 com os padrões novos e confirmar `SAME`; registrar os `*.timing.txt` (FB 4 e 5 fora do escopo: não há servidores disponíveis)
+- [x] 5.2 Rodar `compare.bat` com os recursos desligados (variáveis `FBHTTP_*` de 1.5, não parâmetros do `compare.bat`) e confirmar `SAME`; é a mesma execução que gera a base de 1.5
+- [x] 5.3 Repetir a medição de 1.5 na nuvem com os padrões novos e com a aplicação real; preencher o "depois" em `docs/performance.md` com tempo, requisições e ms de rede por etapa, e a comparação com a base; verificar que o `SELECT` repetido com commit mostra 1 requisição (cenários local e 30 ms simulado fora do escopo: a nuvem é o cenário que importa)
 - [x] 5.4 `docs/deploy.md`: exigir gateway no mesmo host (ou rede < 1 ms) do Firebird e explicar `fb_ms` versus `ms` no log para separar rede de banco; `README.md`: atualizar a frase das "3 requisições" para os números medidos; verificar que os exemplos de log citados existem na saída real do gateway

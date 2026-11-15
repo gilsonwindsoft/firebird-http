@@ -6,6 +6,7 @@ package server
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -129,7 +130,7 @@ func newEnv(t *testing.T, tune func(*config.Config)) *env {
 	cfg := &config.Config{
 		PlainHTTP: true, Aliases: map[string]string{"test": testDB},
 		MaxSessions: 50, MaxSessionsPerIP: 50, MaxBodyBytes: 64 << 20, MaxFetchRows: 5000,
-		MaxInlineBlob: 64 << 10, IdleTimeoutSec: 1800,
+		MaxInlineBlob: 64 << 10, IdleTimeoutSec: 1800, MaxBatchBytes: 4 << 20,
 	}
 	if tune != nil {
 		tune(cfg)
@@ -233,8 +234,31 @@ func TestVersionMismatch(t *testing.T) {
 	buf.ReadFrom(resp.Body)
 	res, _ := protocol.DecodeResponse(buf.Bytes())
 	_, perr := resultReader(t, res[0])
-	if perr == nil || perr.Category != protocol.CatProtocol || !strings.Contains(perr.Messages[0], "supported versions: 1") {
+	if perr == nil || perr.Category != protocol.CatProtocol || !strings.Contains(perr.Messages[0], "supported versions: 2") {
 		t.Fatalf("got %+v", perr)
+	}
+}
+
+// Version 1 is gone: no production install ever used it.
+func TestVersion1Refused(t *testing.T) {
+	e := newEnv(t, nil)
+	body := protocol.EncodeRequest(protocol.Request{Version: 1, Seq: 1, Ops: []protocol.Op{
+		{Code: protocol.OpAttach, Payload: op(protocol.OpAttach, func(w *protocol.Writer) { w.Str("test"); w.Bytes(dpb(testUser, testPassword)) }).Payload},
+	}})
+	resp, err := http.Post(e.http.URL+"/v1/rpc", contentType, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var buf bytes.Buffer
+	buf.ReadFrom(resp.Body)
+	res, _ := protocol.DecodeResponse(buf.Bytes())
+	_, perr := resultReader(t, res[0])
+	if perr == nil || perr.Category != protocol.CatProtocol || !strings.Contains(perr.Messages[0], "version 1") {
+		t.Fatalf("got %+v", perr)
+	}
+	if e.srv.SessionCount() != 0 {
+		t.Fatal("session created")
 	}
 }
 
@@ -551,6 +575,34 @@ func TestLogsHaveNoSecrets(t *testing.T) {
 	}
 }
 
+// Every request log line carries the total time and the time inside the
+// operations, so deploys can tell network cost from Firebird cost.
+func TestRequestLogHasFirebirdTime(t *testing.T) {
+	e := newEnv(t, nil)
+	c := e.attach(t)
+	tr := c.startTr()
+	c.query(tr, "SELECT ID FROM T_ROWS WHERE ID < 10", nil, 100)
+	c.trOp(protocol.OpCommit, tr)
+	found := 0
+	for _, line := range strings.Split(e.logs.String(), "\n") {
+		var rec struct {
+			Msg  string   `json:"msg"`
+			Ms   *float64 `json:"ms"`
+			FbMs *float64 `json:"fb_ms"`
+		}
+		if json.Unmarshal([]byte(line), &rec) != nil || rec.Msg != "request" {
+			continue
+		}
+		if rec.Ms == nil || rec.FbMs == nil || *rec.FbMs > *rec.Ms {
+			t.Fatalf("bad request log line: %s", line)
+		}
+		found++
+	}
+	if found < 3 {
+		t.Fatalf("%d request lines", found)
+	}
+}
+
 func TestDatabaseAndTransactionInfo(t *testing.T) {
 	e := newEnv(t, nil)
 	c := e.attach(t)
@@ -756,6 +808,151 @@ func TestClientTransactionIDInSameBatch(t *testing.T) {
 	if _, err := c.one(bad); err == nil || err.Category != protocol.CatProtocol {
 		t.Fatalf("got %v", err)
 	}
+}
+
+// A client that cached the description can START, PREPARE (under its own
+// statement id) and EXECUTE in one request.
+func TestClientStatementIDInSameBatch(t *testing.T) {
+	e := newEnv(t, nil)
+	c := e.attach(t)
+	const tr, stmt = 0x80000010, 0x80000011
+	const sql = "SELECT ID, NAME FROM T_ROWS WHERE ID BETWEEN 1 AND 3 ORDER BY ID"
+	start := op(protocol.OpStartTransaction, func(w *protocol.Writer) { w.U32(c.db); w.Bytes(tpbDefault); w.U32(tr) })
+	// Description as the DLL would hold it in its cache.
+	p := prepared{stmt: stmt, out: []protocol.Var{{Type: sqlLongT, Len: 4}, {Type: sqlVaryingT + 1, Len: 200, SubType: 4}}} // ID is NOT NULL
+	outL := layoutOf(p.out)
+	res := c.call(start, prepareOp(c.db, tr, stmt, sql), executeOpExpected(tr, p, nil, outL, 100, outL, protocol.Layout{}))
+	if len(res) != 3 || res[0].Status != 0 || res[1].Status != 0 || res[2].Status != 0 {
+		t.Fatalf("results %+v", res)
+	}
+	pr := &protocol.Reader{B: res[1].Payload}
+	if got := pr.U32(); got != stmt {
+		t.Fatalf("stmt id %x", got)
+	}
+	er := &protocol.Reader{B: res[2].Payload}
+	if kind := er.U8(); kind != 2 {
+		t.Fatalf("kind %d", kind)
+	}
+	er.Bytes()
+	b := readBatch(er, outL)
+	if len(b.rows) != 3 || !b.eof || valueInt32(b.rows[2][0]) != 3 {
+		t.Fatalf("rows %d eof %v", len(b.rows), b.eof)
+	}
+	// The id stays usable and cannot be reused while it exists.
+	if _, err := c.one(prepareOp(c.db, tr, stmt, "SELECT 1 FROM RDB$DATABASE")); err == nil || err.Category != protocol.CatProtocol {
+		t.Fatalf("reused id: got %v", err)
+	}
+	c.must(op(protocol.OpFree, func(w *protocol.Writer) { w.U32(stmt); w.U16(2) }))
+	// A failed PREPARE under a client id leaves the id free.
+	if _, err := c.one(prepareOp(c.db, tr, stmt, "SELECT * FROM NO_SUCH_TABLE")); err == nil || err.Category != protocol.CatFirebird {
+		t.Fatalf("bad sql: got %v", err)
+	}
+	r := c.must(prepareOp(c.db, tr, stmt, "SELECT 1 FROM RDB$DATABASE"))
+	if got := r.U32(); got != stmt {
+		t.Fatalf("stmt id after failed prepare %x", got)
+	}
+	c.trOp(protocol.OpCommit, tr)
+}
+
+// DDL between the cached PREPARE and the EXECUTE: the gateway compares the
+// expected description with the real one and refuses to execute.
+func TestExecuteWithStaleDescription(t *testing.T) {
+	e := newEnv(t, nil)
+	c := e.attach(t)
+	tr := c.startTr()
+	if _, err := c.execSQL(tr, "RECREATE TABLE T_DDL (ID INTEGER, V VARCHAR(10))", nil); err != nil {
+		t.Fatal(err)
+	}
+	c.trOp(protocol.OpCommit, tr)
+	tr = c.startTr()
+	const sql = "SELECT ID, V FROM T_DDL"
+	p, err := c.prepare(tr, sql)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cached := layoutOf(p.out) // what the DLL keeps
+	// Correct expectation executes.
+	r := c.must(executeOpExpected(tr, p, nil, cached, 10, cached, protocol.Layout{}))
+	if kind := r.U8(); kind != 2 {
+		t.Fatalf("kind %d", kind)
+	}
+	c.must(op(protocol.OpFree, func(w *protocol.Writer) { w.U32(p.stmt); w.U16(2) }))
+	c.trOp(protocol.OpCommit, tr)
+	// Schema change.
+	tr = c.startTr()
+	if _, err := c.execSQL(tr, "ALTER TABLE T_DDL ALTER COLUMN V TYPE VARCHAR(40)", nil); err != nil {
+		t.Fatal(err)
+	}
+	c.trOp(protocol.OpCommit, tr)
+	// The DLL re-prepares under a client id in the same batch as the EXECUTE
+	// built from the stale cache.
+	const ctr, stmt = 0x80000020, 0x80000021
+	start := op(protocol.OpStartTransaction, func(w *protocol.Writer) { w.U32(c.db); w.Bytes(tpbDefault); w.U32(ctr) })
+	stale := prepared{stmt: stmt, out: p.out}
+	res := c.call(start, prepareOp(c.db, ctr, stmt, sql), executeOpExpected(ctr, stale, nil, cached, 10, cached, protocol.Layout{}))
+	if len(res) != 3 || res[1].Status != 0 {
+		t.Fatalf("results %+v", res)
+	}
+	_, perr := resultReader(t, res[2])
+	if perr == nil || perr.Category != protocol.CatProtocol || perr.Messages[0] != errDescriptionChanged {
+		t.Fatalf("got %+v", perr)
+	}
+	// The PREPARE in that batch already carries the new description, and the
+	// session stays usable: executing with it works.
+	pr := &protocol.Reader{B: res[1].Payload}
+	pr.U32()
+	pr.I32()
+	fresh := protocol.ReadDesc(pr)
+	if fresh[1].Len == p.out[1].Len {
+		t.Fatalf("description did not change: %+v", fresh)
+	}
+	freshL := layoutOf(fresh)
+	r = c.must(executeOpExpected(ctr, prepared{stmt: stmt}, nil, freshL, 10, freshL, protocol.Layout{}))
+	if kind := r.U8(); kind != 2 {
+		t.Fatalf("kind %d", kind)
+	}
+	c.trOp(protocol.OpCommit, ctr)
+}
+
+// max_batch_bytes stops a batch early with at least one row and no eof;
+// the next FETCH continues from the following row.
+func TestBatchByteLimit(t *testing.T) {
+	e := newEnv(t, func(c *config.Config) { c.MaxBatchBytes = 64 << 10 })
+	c := e.attach(t)
+	tr := c.startTr()
+	const sql = "SELECT ID, CAST(LPAD('', 10000, 'x') AS VARCHAR(10000) CHARACTER SET NONE) FROM T_ROWS WHERE ID BETWEEN 1 AND 20 ORDER BY ID"
+	p, err := c.prepare(tr, sql)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outL := layoutOf(p.out)
+	r := c.must(executeOp(tr, p, nil, outL, 5000))
+	r.U8()
+	r.Bytes()
+	first := readBatch(r, outL)
+	// 10 KB rows under a 64 KB limit: 6 rows, cursor still open.
+	if len(first.rows) != 6 || first.eof {
+		t.Fatalf("first batch %d rows eof %v", len(first.rows), first.eof)
+	}
+	total, requests := len(first.rows), 1
+	last := valueInt32(first.rows[len(first.rows)-1][0])
+	b := first
+	for !b.eof {
+		r := c.must(op(protocol.OpFetch, func(w *protocol.Writer) { w.U32(p.stmt); protocol.WriteLayout(w, nil); w.U32(5000) }))
+		b = readBatch(r, outL)
+		requests++
+		for _, row := range b.rows {
+			if id := valueInt32(row[0]); id != last+1 {
+				t.Fatalf("row %d after %d", id, last)
+			}
+			last++
+		}
+		total += len(b.rows)
+	}
+	if total != 20 || requests > 5 {
+		t.Fatalf("total %d requests %d", total, requests)
+	}
+	c.trOp(protocol.OpCommit, tr)
 }
 
 func TestPrepareInfoAndCursorRecordsMatchNative(t *testing.T) {

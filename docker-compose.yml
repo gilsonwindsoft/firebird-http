@@ -21,6 +21,8 @@ services:
       FBHTTP_MAX_SESSIONS: ${FBHTTP_MAX_SESSIONS:-500}
       FBHTTP_MAX_SESSIONS_PER_IP: ${FBHTTP_MAX_SESSIONS_PER_IP:-50}
       FBHTTP_IDLE_TIMEOUT_SECONDS: ${FBHTTP_IDLE_TIMEOUT_SECONDS:-600}
+      # A row batch stops early (at least one row) when it reaches this size.
+      FBHTTP_MAX_BATCH_BYTES: ${FBHTTP_MAX_BATCH_BYTES:-4194304}
     ports:
       # Published on all interfaces so an nginx container reaches it at
       # 172.17.0.1:8080. Docker bypasses ufw: block 8080 in the external firewall.

@@ -1,8 +1,8 @@
 unit fbhttp.Transport;
 
 { HTTP transport to the gateway: one THTTPClient (WinHTTP on Windows) per
-  attachment, sequence numbers, retry with the same seq, keep-alive ping.
-  ASCII only. }
+  attachment, sequence numbers, retry with the same seq, keep-alive ping,
+  request counters and the diagnostic log (FBHTTP_DEBUG_LOG). ASCII only. }
 
 interface
 
@@ -11,6 +11,16 @@ uses
   System.Net.URLClient, System.NetConsts, fbhttp.Config, fbhttp.Protocol;
 
 type
+  // Network counters. Size lets callers of ws_fbclient_stats version the record.
+  TWsFbStats = record
+    Size: Cardinal;
+    Requests: Int64;   // HTTP requests sent (rpc and ping), including retries
+    NetMs: Int64;      // time waiting for the gateway, in milliseconds
+    BytesOut: Int64;   // request bodies
+    BytesIn: Int64;    // response bodies as received (before gunzip)
+  end;
+  PWsFbStats = ^TWsFbStats;
+
   TFbTransport = class
   private
     FConfig: TFbHttpConfig;
@@ -20,10 +30,12 @@ type
     FToken: string;
     FSeq: Cardinal;
     FLastActivity: UInt64;
+    FStats: TWsFbStats;
     function NewClient: THTTPClient;
     procedure ValidateCertificate(const Sender: TObject; const ARequest: TURLRequest;
       const Certificate: TCertificate; var Accepted: Boolean);
-    function Post(const Body: TBytes): TBytes;
+    procedure Count(Requests, Ms, BytesOut, BytesIn: Int64);
+    function Post(const Body: TBytes; const OpsText: string): TBytes;
   public
     constructor Create(const Config: TFbHttpConfig);
     destructor Destroy; override;
@@ -41,13 +53,22 @@ type
     // POST /v1/ping. False when the session no longer exists.
     function Ping: Boolean;
     function IdleSeconds: Int64;
+    function IdleMs: Int64;
     property Config: TFbHttpConfig read FConfig;
     // Session token returned by ATTACH.
     property Token: string read FToken write FToken;
+    // Counters of this attachment (read under the attachment lock).
+    property Stats: TWsFbStats read FStats;
   end;
 
 // gzip body (Content-Encoding: gzip from the gateway) to raw bytes.
 function Gunzip(const B: TBytes): TBytes;
+// Process-wide counters, summed over every transport.
+function GlobalStats: TWsFbStats;
+// Optional diagnostics: FBHTTP_DEBUG_LOG=<file>. Never logs SQL, data or passwords.
+procedure DebugLog(const Msg: string);
+// "20,22" for a batch of PREPARE and EXECUTE.
+function OpList(const Ops: array of TFbOp): string;
 
 implementation
 
@@ -58,6 +79,79 @@ const
   CONTENT_TYPE = 'application/x-fbhttp';
   MAX_RETRIES = 2;
 
+var
+  GDebugPath: string;
+  GDebugLock: TCriticalSection;
+  GStats: TWsFbStats;
+  GStatsLock: TCriticalSection;
+
+procedure DebugLog(const Msg: string);
+var
+  f: TextFile;
+begin
+  if GDebugPath = '' then
+    Exit;
+  GDebugLock.Enter;
+  try
+    AssignFile(f, GDebugPath);
+    if FileExists(GDebugPath) then
+      Append(f)
+    else
+      Rewrite(f);
+    try
+      Writeln(f, FormatDateTime('hh:nn:ss.zzz', Now), ' t', TThread.CurrentThread.ThreadID, ' ', Msg);
+    finally
+      CloseFile(f);
+    end;
+  except
+  end;
+  GDebugLock.Leave;
+end;
+
+function OpList(const Ops: array of TFbOp): string;
+var
+  i: Integer;
+begin
+  Result := '';
+  for i := 0 to High(Ops) do
+  begin
+    if i > 0 then
+      Result := Result + ',';
+    Result := Result + IntToStr(Ops[i].Code);
+    if Ops[i].Flags and FLAG_DEFERRED <> 0 then
+      Result := Result + 'd';
+  end;
+end;
+
+function GlobalStats: TWsFbStats;
+begin
+  GStatsLock.Enter;
+  try
+    Result := GStats;
+  finally
+    GStatsLock.Leave;
+  end;
+end;
+
+procedure TFbTransport.Count(Requests, Ms, BytesOut, BytesIn: Int64);
+begin
+  // FStats is only touched by the thread holding the attachment lock (Post)
+  // or by the keep-alive thread (Ping), so only the global copy needs a lock.
+  Inc(FStats.Requests, Requests);
+  Inc(FStats.NetMs, Ms);
+  Inc(FStats.BytesOut, BytesOut);
+  Inc(FStats.BytesIn, BytesIn);
+  GStatsLock.Enter;
+  try
+    Inc(GStats.Requests, Requests);
+    Inc(GStats.NetMs, Ms);
+    Inc(GStats.BytesOut, BytesOut);
+    Inc(GStats.BytesIn, BytesIn);
+  finally
+    GStatsLock.Leave;
+  end;
+end;
+
 constructor TFbTransport.Create(const Config: TFbHttpConfig);
 begin
   FConfig := Config;
@@ -65,6 +159,7 @@ begin
   FClient := NewClient;
   FPingClient := NewClient;
   FLastActivity := GetTickCount64;
+  FStats.Size := SizeOf(FStats);
 end;
 
 destructor TFbTransport.Destroy;
@@ -127,18 +222,21 @@ begin
   end;
 end;
 
-function TFbTransport.Post(const Body: TBytes): TBytes;
+function TFbTransport.Post(const Body: TBytes; const OpsText: string): TBytes;
 var
   attempt: Integer;
   req: TBytesStream;
   resp: IHTTPResponse;
   headers: TNetHeaders;
+  started: UInt64;
+  ms: Int64;
 begin
   // The gateway gzips large responses; decompressed below (works on any Windows/Delphi version).
   headers := [TNameValuePair.Create('Accept-Encoding', 'gzip')];
   if FToken <> '' then
     headers := headers + [TNameValuePair.Create('X-Session', FToken)];
   attempt := 0;
+  started := GetTickCount64;
   while True do
   begin
     req := TBytesStream.Create(Body);
@@ -148,14 +246,23 @@ begin
         Break;
       except
         on E: ENetHTTPCertificateException do
+        begin
+          Count(1, Int64(GetTickCount64 - started), Length(Body), 0);
           raise EFbTransport.Create('TLS certificate rejected: ' + E.Message);
+        end;
         on E: ENetException do
         begin
           // Same body, same seq: the gateway answers a repeated request with
           // the stored response instead of executing it again.
           Inc(attempt);
+          Count(1, 0, Length(Body), 0);
           if attempt > MAX_RETRIES then
+          begin
+            Count(0, Int64(GetTickCount64 - started), 0, 0);
+            DebugLog(Format('req seq=%d ops=%s out=%d FAILED after %d attempts: %s',
+              [FSeq, OpsText, Length(Body), attempt, E.Message]));
             raise EFbTransport.Create(E.Message);
+          end;
         end;
       end;
     finally
@@ -163,6 +270,10 @@ begin
     end;
   end;
   FLastActivity := GetTickCount64;
+  ms := Int64(FLastActivity - started);
+  Count(1, ms, Length(Body), resp.ContentStream.Size);
+  DebugLog(Format('req seq=%d ops=%s out=%d in=%d ms=%d http=%d',
+    [FSeq, OpsText, Length(Body), resp.ContentStream.Size, ms, resp.StatusCode]));
   case resp.StatusCode of
     200:
       begin
@@ -205,7 +316,7 @@ begin
   try
     FToken := '';
     FSeq := 1;
-    if not DecodeResponse(Post(EncodeRequest(FSeq, [Op])), res) then
+    if not DecodeResponse(Post(EncodeRequest(FSeq, [Op]), OpList([Op])), res) then
       raise EFbTransport.Create('malformed response from gateway');
     Result := FirstResult(res).Payload;
   finally
@@ -218,7 +329,7 @@ begin
   FLock.Enter;
   try
     Inc(FSeq);
-    if not DecodeResponse(Post(EncodeRequest(FSeq, Ops)), Result) then
+    if not DecodeResponse(Post(EncodeRequest(FSeq, Ops), OpList(Ops)), Result) then
       raise EFbTransport.Create('malformed response from gateway');
   finally
     FLock.Leave;
@@ -262,8 +373,10 @@ function TFbTransport.Ping: Boolean;
 var
   resp: IHTTPResponse;
   empty: TBytesStream;
+  started: UInt64;
 begin
   // Separate client: the main one may be busy with a long request.
+  started := GetTickCount64;
   empty := TBytesStream.Create(nil);
   try
     resp := FPingClient.Post(FConfig.Url + '/v1/ping', empty, nil,
@@ -271,12 +384,29 @@ begin
   finally
     empty.Free;
   end;
+  FLastActivity := GetTickCount64;
+  Count(1, Int64(FLastActivity - started), 0, 0);
+  DebugLog(Format('ping http=%d ms=%d', [resp.StatusCode, Int64(FLastActivity - started)]));
   Result := resp.StatusCode = 204;
 end;
 
 function TFbTransport.IdleSeconds: Int64;
 begin
-  Result := Int64((GetTickCount64 - FLastActivity) div 1000);
+  Result := IdleMs div 1000;
 end;
 
+function TFbTransport.IdleMs: Int64;
+begin
+  Result := Int64(GetTickCount64 - FLastActivity);
+end;
+
+initialization
+  GDebugLock := TCriticalSection.Create;
+  GStatsLock := TCriticalSection.Create;
+  GDebugPath := GetEnvironmentVariable('FBHTTP_DEBUG_LOG');
+  GStats.Size := SizeOf(GStats);
+
+finalization
+  GStatsLock.Free;
+  GDebugLock.Free;
 end.

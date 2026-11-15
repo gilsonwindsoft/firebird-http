@@ -36,6 +36,7 @@ out = [
     "  fbhttp.Status in '..\\src\\fbhttp.Status.pas',",
     "  fbhttp.Handles in '..\\src\\fbhttp.Handles.pas',",
     "  fbhttp.Config in '..\\src\\fbhttp.Config.pas',",
+    "  fbhttp.PrepCache in '..\\src\\fbhttp.PrepCache.pas',",
     "  fbhttp.Transport in '..\\src\\fbhttp.Transport.pas',",
     "  fbhttp.Client in '..\\src\\fbhttp.Client.pas';",
     "",

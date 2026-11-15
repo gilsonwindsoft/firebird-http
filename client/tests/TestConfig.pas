@@ -13,6 +13,8 @@ type
     [Test] procedure EnvironmentWinsOverIni;
     [Test] procedure PlainHttpNeedsOptIn;
     [Test] procedure GatewayFromDatabaseHost;
+    [Test] procedure RoundTripDefaults;
+    [Test] procedure RoundTripKeysFromEnvironmentAndIni;
   end;
 
 implementation
@@ -79,6 +81,47 @@ begin
   Assert.AreEqual('', GatewayUrlFromDatabase('C:\data\x.fdb'));
   Assert.AreEqual('', GatewayUrlFromDatabase('inet://fb.windsoft.me/x.fdb'));
   Assert.AreEqual('', GatewayUrlFromDatabase(':x.fdb'));
+end;
+
+procedure TConfigTests.RoundTripDefaults;
+var
+  c: TFbHttpConfig;
+begin
+  c := LoadConfig('', EmptyEnv);
+  Assert.AreEqual(5000, c.FetchRows);
+  Assert.AreEqual(256, c.PrepareCache);
+  Assert.IsTrue(c.DeferReadOnlyCommit);
+  Assert.AreEqual(1000, c.DeferredFlushMs);
+end;
+
+procedure TConfigTests.RoundTripKeysFromEnvironmentAndIni;
+var
+  ini: string;
+  c: TFbHttpConfig;
+begin
+  ini := TPath.Combine(TPath.GetTempPath, 'fbhttp-test2.ini');
+  TFile.WriteAllText(ini, '[gateway]'#13#10'url=https://ini.example'#13#10'prepare_cache=0'#13#10 +
+    'defer_readonly_commit=0'#13#10'deferred_flush_ms=250'#13#10);
+  try
+    c := LoadConfig(ini, EmptyEnv);
+    Assert.AreEqual(0, c.PrepareCache, 'ini: prepare_cache=0 disables');
+    Assert.IsFalse(c.DeferReadOnlyCommit, 'ini: defer_readonly_commit=0 disables');
+    Assert.AreEqual(250, c.DeferredFlushMs);
+    Assert.AreEqual('', c.Validate);
+    c := LoadConfig(ini,
+      function(const Name: string): string
+      begin
+        if Name = 'FBHTTP_PREPARE_CACHE' then Result := '32'
+        else if Name = 'FBHTTP_DEFER_READONLY_COMMIT' then Result := 'true'
+        else if Name = 'FBHTTP_DEFERRED_FLUSH_MS' then Result := '-1'
+        else Result := '';
+      end);
+    Assert.AreEqual(32, c.PrepareCache, 'environment wins over ini');
+    Assert.IsTrue(c.DeferReadOnlyCommit);
+    Assert.Contains(c.Validate, 'invalid numeric value');
+  finally
+    TFile.Delete(ini);
+  end;
 end;
 
 initialization

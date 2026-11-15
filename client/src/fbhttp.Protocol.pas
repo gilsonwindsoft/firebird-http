@@ -1,6 +1,6 @@
 unit fbhttp.Protocol;
 
-{ fbhttp v1 wire format (docs/protocol.md). Mirrors
+{ fbhttp v2 wire format (docs/protocol.md). Mirrors
   gateway/internal/protocol/codec.go. ASCII only. }
 
 interface
@@ -9,7 +9,7 @@ uses
   System.SysUtils;
 
 const
-  PROTOCOL_VERSION = 1;
+  PROTOCOL_VERSION = 2;
 
   OP_ATTACH = 1;
   OP_DETACH = 2;

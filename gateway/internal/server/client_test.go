@@ -189,6 +189,12 @@ func layoutOf(vars []protocol.Var) protocol.Layout {
 }
 
 func executeOp(tr uint32, p prepared, inRow []protocol.Value, outL protocol.Layout, fetch uint32) protocol.Op {
+	return executeOpExpected(tr, p, inRow, outL, fetch, nil, nil)
+}
+
+// executeOpExpected also sends the description the client expects (v2);
+// expOut == nil and expIn == nil sends "no expected description".
+func executeOpExpected(tr uint32, p prepared, inRow []protocol.Value, outL protocol.Layout, fetch uint32, expOut, expIn protocol.Layout) protocol.Op {
 	return op(protocol.OpExecute, func(w *protocol.Writer) {
 		w.U32(tr)
 		w.U32(p.stmt)
@@ -202,6 +208,27 @@ func executeOp(tr uint32, p prepared, inRow []protocol.Value, outL protocol.Layo
 		}
 		protocol.WriteLayout(w, outL)
 		w.U32(fetch)
+		if expOut == nil && expIn == nil {
+			w.U8(0)
+			return
+		}
+		w.U8(1)
+		protocol.WriteLayout(w, expOut)
+		protocol.WriteLayout(w, expIn)
+	})
+}
+
+// prepareOp builds a PREPARE with the given statement id (0 = allocate,
+// >= 0x80000000 = client-chosen).
+func prepareOp(db, tr, stmt uint32, sql string) protocol.Op {
+	return op(protocol.OpPrepare, func(w *protocol.Writer) {
+		w.U32(db)
+		w.U32(tr)
+		w.U32(stmt)
+		w.U16(3)
+		w.Str(sql)
+		w.Bytes(prepareInfoItems)
+		w.U32(1024)
 	})
 }
 

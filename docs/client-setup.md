@@ -29,7 +29,25 @@ url=https://fb.windsoft.me
 
 Sem barra no final. Com o `.ini`, o servidor que vem no `Database` é ignorado, e a aplicação pode continuar com `localhost:ws-windsoft`. Use este jeito quando não puder mudar o `Database` da aplicação.
 
-Se existir `url` no `.ini` (ou na variável `FBHTTP_URL`), ela vale. Os outros itens do `.ini` (timeouts, `fetch_rows`, `inline_blob_bytes`) têm padrão e podem ficar de fora.
+Se existir `url` no `.ini` (ou na variável `FBHTTP_URL`), ela vale. Os outros itens do `.ini` têm padrão e podem ficar de fora. Cada um também pode vir de uma variável de ambiente `FBHTTP_<CHAVE>` em maiúsculas (`FBHTTP_PREPARE_CACHE`), que tem prioridade sobre o `.ini`.
+
+| Chave | Padrão | O que faz |
+|---|---|---|
+| `connect_timeout_ms`, `response_timeout_ms` | 10000, 1800000 | Tempo para conectar ao gateway e para esperar uma resposta (um SQL demorado). |
+| `fetch_rows` | 5000 | Linhas pedidas por lote. O gateway também para o lote em `FBHTTP_MAX_BATCH_BYTES` (4 MB). |
+| `inline_blob_bytes` | 65536 | BLOB até esse tamanho vem inteiro na abertura. |
+| `keepalive_seconds` | 120 | Ping ao gateway em conexão ociosa, para a sessão não expirar. |
+| `prepare_cache` | 256 | Comandos preparados lembrados por conexão. Um SQL já visto é descrito do cache e o `PREPARE` vai junto com o `EXECUTE`: 1 requisição em vez de 2. `0` desliga. |
+| `defer_readonly_commit` | 1 | `Commit`/`Rollback` de uma transação que só leu volta na hora e vai com a próxima requisição. `0` desliga. |
+| `deferred_flush_ms` | 1000 | Conexão ociosa por esse tempo envia o que ficou adiado (commits, frees), para a transação não ficar aberta no Firebird. |
+| `allow_plain_http`, `allow_invalid_certificate` | 0 | Só para rede de teste. |
+
+O que o cache e o commit adiado mudam no comportamento, e quando desligar:
+
+- **Schema alterado com SQL em cache.** Se uma tabela ou procedure muda (DDL) de forma que colunas ou parâmetros de um SQL já em cache ficam diferentes, a próxima execução desse SQL falha uma vez com `fbhttp: statement description changed` (código `isc_dsql_sqlda_err`). A DLL descarta a entrada, e a preparação seguinte do mesmo SQL vai ao gateway e traz a descrição nova. Numa aplicação que altera o schema em uso (ferramenta de atualização de banco), use `prepare_cache=0`.
+- **Transação só de leitura confirmada com atraso.** O `Commit` volta antes de o gateway confirmar. A confirmação sai na próxima requisição da conexão ou em até `deferred_flush_ms`. Isso não muda o que a aplicação vê na própria conexão (as operações seguem em ordem). Muda em dois casos: uma *procedure selecionável* que grava (`SELECT ... FROM PROC`) conta como leitura e a gravação só fica confirmada na descarga; e outra conexão ou processo que leia logo após o `Commit` pode ainda não ver essa gravação. Se a aplicação tem procedures selecionáveis que gravam, use `defer_readonly_commit=0`. `INSERT`, `UPDATE`, `DELETE`, `EXECUTE PROCEDURE`, `SELECT ... FOR UPDATE`, `EXECUTE IMMEDIATE` e BLOBs gravados sempre tornam o commit síncrono.
+
+Para voltar ao comportamento anterior sem trocar a DLL: `prepare_cache=0`, `defer_readonly_commit=0` e `fetch_rows=1000`.
 
 ## Aponte a aplicação para a DLL
 
@@ -81,7 +99,7 @@ Abra a aplicação. No servidor, `docker compose logs -f` deve mostrar `session 
 | Banco não encontrado (erro do Firebird) | O caminho ou alias não existe no `FBHTTP_FIREBIRD_HOST`, ou o `DatabaseAccess` do Firebird não permite. |
 | `not supported by ws-fbclient` | A aplicação chamou uma função que a DLL não implementa (ver [Limitações](../README.md#limitações)). |
 
-Para diagnóstico na estação, defina a variável de ambiente `FBHTTP_DEBUG_LOG=C:\temp\ws-fbclient.log` antes de abrir a aplicação. O log mostra as chamadas e os tempos, sem dados nem senhas.
+Para diagnóstico na estação, defina a variável de ambiente `FBHTTP_DEBUG_LOG=C:\temp\ws-fbclient.log` antes de abrir a aplicação. O log tem uma linha por requisição ao gateway (`req seq=12 ops=10,20,22 out=180 in=2310 ms=41 http=200`: operações do lote, bytes enviados e recebidos, tempo de rede), sem SQL, dados nem senhas. Contar as linhas `req` de uma tela diz quantas idas e voltas ela custa; ver [performance.md](performance.md).
 
 ## Rollback (voltar à conexão direta)
 

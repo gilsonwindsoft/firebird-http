@@ -117,6 +117,7 @@ const
   isc_net_write_err = 335544727;
   isc_wish_list = 335544378;
   isc_random = 335544382;
+  isc_dsql_sqlda_err = 335544583;
 
 function XSQLDA_LENGTH(n: Integer): Integer; inline;
 function SqlVar(da: PXSQLDA; i: Integer): PXSQLVAR; inline;

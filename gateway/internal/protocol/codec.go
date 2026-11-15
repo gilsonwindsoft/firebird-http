@@ -1,4 +1,4 @@
-// Package protocol implements the fbhttp v1 wire format (docs/protocol.md).
+// Package protocol implements the fbhttp v2 wire format (docs/protocol.md).
 package protocol
 
 import (
@@ -6,7 +6,7 @@ import (
 	"errors"
 )
 
-const Version = 1
+const Version = 2
 
 // Opcodes.
 const (

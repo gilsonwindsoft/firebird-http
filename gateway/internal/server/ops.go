@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/binary"
 	"fmt"
 
 	"fbhttp/gateway/internal/fb"
@@ -11,6 +12,11 @@ const (
 	dsqlDrop       = 2
 	maxSegmentSize = 0xFFFF
 	maxBlobChunk   = 4 << 20
+)
+
+const (
+	fetchChunk     = 256 // rows per libfbclient fetch loop inside a batch
+	sqlVaryingType = 448
 )
 
 func protoErr(cat uint8, format string, a ...any) *protocol.Error {
@@ -245,8 +251,14 @@ func (srv *Server) prepare(s *Session, r *protocol.Reader, w *protocol.Writer) *
 	if e := firstErr(e1, e2); e != nil {
 		return e
 	}
+	// stmtID: 0 = allocate; >= clientIDBase = allocate under the client's id
+	// (so the batch can EXECUTE it); otherwise re-prepare an existing one.
+	fresh := stmtID == 0 || stmtID >= clientIDBase
 	var st *handle
-	if stmtID == 0 {
+	if fresh {
+		if stmtID != 0 && s.handles[stmtID] != nil {
+			return protoErr(protocol.CatProtocol, "invalid client statement id %d", stmtID)
+		}
 		stmt, e := fb.Allocate(db.h)
 		if e != nil {
 			return e
@@ -260,7 +272,7 @@ func (srv *Server) prepare(s *Session, r *protocol.Reader, w *protocol.Writer) *
 	}
 	out, in, e := st.stmt.Prepare(tr.h, dialect, sql)
 	if e != nil {
-		if stmtID == 0 {
+		if fresh {
 			st.stmt.Free(dsqlDrop) // the client never saw this statement
 		}
 		return e
@@ -268,15 +280,16 @@ func (srv *Server) prepare(s *Session, r *protocol.Reader, w *protocol.Writer) *
 	var info []byte
 	if len(infoItems) > 0 {
 		if info, e = st.stmt.SQLInfo(infoItems, infoLen); e != nil {
-			if stmtID == 0 {
+			if fresh {
 				st.stmt.Free(dsqlDrop)
 			}
 			return e
 		}
 	}
-	if stmtID == 0 {
-		stmtID = s.add(st)
+	if fresh {
+		stmtID = s.addAs(stmtID, st)
 	}
+	st.outDesc, st.inDesc = typesOf(out), typesOf(in)
 	st.out = nil
 	st.sql = sql
 	if srv.debugSQL {
@@ -289,6 +302,30 @@ func (srv *Server) prepare(s *Session, r *protocol.Reader, w *protocol.Writer) *
 	w.Bytes(info)
 	return nil
 }
+
+// typesOf keeps the type part of a description.
+func typesOf(vars []protocol.Var) protocol.Layout {
+	l := make(protocol.Layout, len(vars))
+	for i, v := range vars {
+		l[i] = protocol.Var{Type: v.Type, Scale: v.Scale, SubType: v.SubType, Len: v.Len}
+	}
+	return l
+}
+
+func sameTypes(a, b protocol.Layout) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Type != b[i].Type || a[i].Scale != b[i].Scale || a[i].SubType != b[i].SubType || a[i].Len != b[i].Len {
+			return false
+		}
+	}
+	return true
+}
+
+// Message the client matches to drop its cached description.
+const errDescriptionChanged = "fbhttp: statement description changed"
 
 func readInput(r *protocol.Reader) (protocol.Layout, []protocol.Value) {
 	l := protocol.ReadLayout(r)
@@ -305,11 +342,21 @@ func (srv *Server) execute(s *Session, r *protocol.Reader, w *protocol.Writer) *
 	inL, inRow := readInput(r)
 	outL := protocol.ReadLayout(r)
 	fetch := int(r.U32())
+	// Description the client answered to the driver from its cache, when the
+	// PREPARE came in this batch. A mismatch (DDL since) must not execute.
+	hasExpected := r.U8() == 1
+	var expOut, expIn protocol.Layout
+	if hasExpected {
+		expOut, expIn = protocol.ReadLayout(r), protocol.ReadLayout(r)
+	}
 	if r.Err != nil {
 		return nil
 	}
 	if e := firstErr(e1, e2); e != nil {
 		return e
+	}
+	if hasExpected && !(sameTypes(expOut, st.outDesc) && sameTypes(expIn, st.inDesc)) {
+		return protoErr(protocol.CatProtocol, "%s", errDescriptionChanged)
 	}
 
 	if st.stmt.IsCursor() && !(fetch == 0 && outL != nil) {
@@ -347,26 +394,59 @@ func (srv *Server) execute(s *Session, r *protocol.Reader, w *protocol.Writer) *
 	return nil
 }
 
+// maxRowBytes is the largest encoded size of one row of l.
+func maxRowBytes(l protocol.Layout) int {
+	n := 0
+	for _, v := range l {
+		n += 1 + int(uint16(v.Len))
+		if v.Type&^1 == sqlVaryingType {
+			n += 2
+		}
+	}
+	return max(n, 1)
+}
+
+// fetch writes a batch of up to n rows, stopping early when the encoded
+// rows reach max_batch_bytes (at least one row). Rows come from libfbclient
+// in chunks sized so the limit is not crossed by more than one row.
 func (srv *Server) fetch(st *handle, n int, w *protocol.Writer) *protocol.Error {
 	n = min(n, srv.cfg.MaxFetchRows)
 	if st.stmt.Type == fb.StmtSelectForUpd {
 		n = min(n, 1) // keep WHERE CURRENT OF on the row the client sees
 	}
-	var rows [][]protocol.Value
-	eof := false
-	if n > 0 {
-		var e *protocol.Error
-		if rows, eof, e = st.stmt.Fetch(n); e != nil {
+	limit := srv.cfg.MaxBatchBytes
+	if limit <= 0 {
+		limit = 4 << 20
+	}
+	rowMax := maxRowBytes(st.out)
+	countAt := len(w.B)
+	w.U32(0) // row count, patched below
+	start := len(w.B)
+	count, eof := 0, false
+	for count < n && !eof {
+		// Rows that still fit (by their largest encoding). A batch never
+		// crosses the limit except with its first row.
+		room := (limit - (len(w.B) - start)) / rowMax
+		if room <= 0 {
+			if count > 0 {
+				break
+			}
+			room = 1
+		}
+		rows, chunkEOF, e := st.stmt.Fetch(min(n-count, fetchChunk, room))
+		if e != nil {
 			return e
 		}
+		if srv.debugSQL && count == 0 && len(rows) > 0 {
+			srv.log.Info("debug rows", "sql", st.sql, "layout", descTypes(st.out), "first", rowHex(rows[0]))
+		}
+		for _, row := range rows {
+			protocol.WriteRow(w, st.out, row)
+		}
+		count += len(rows)
+		eof = chunkEOF
 	}
-	if srv.debugSQL && len(rows) > 0 {
-		srv.log.Info("debug rows", "sql", st.sql, "layout", descTypes(st.out), "rows", len(rows), "first", rowHex(rows[0]))
-	}
-	w.U32(uint32(len(rows)))
-	for _, row := range rows {
-		protocol.WriteRow(w, st.out, row)
-	}
+	binary.LittleEndian.PutUint32(w.B[countAt:], uint32(count))
 	w.U8(b2u8(eof))
 	return nil
 }

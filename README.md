@@ -23,7 +23,7 @@ O nome `ws-fbclient.dll` permite que ela fique na mesma máquina que o `fbclient
 | `client/ws-fbclient/` | Projeto, `build.bat` e `ws-fbclient.example.ini` |
 | `client/tests/` | Testes DUnitX da DLL |
 | `client/proxy/` | Proxy de log do `fbclient.dll`, para descobrir quais funções uma aplicação chama |
-| `docs/` | `deploy.md` (servidor), `client-setup.md` (estação), `protocol.md` (protocolo), `api-surface.md` (funções usadas pelo driver) |
+| `docs/` | `deploy.md` (servidor), `client-setup.md` (estação), `protocol.md` (protocolo), `api-surface.md` (funções usadas pelo driver), `performance.md` (medição) |
 | `tests/` | Schemas SQL usados pelos testes de integração |
 
 ## 1. Subir o servidor
@@ -74,7 +74,7 @@ Passo a passo, tabela de `Database`, erros comuns e rollback: [docs/client-setup
 - Só Windows 32 bits, só API legada `isc_*`. A API orientada a objetos do Firebird 3+ (`fb_get_master_interface`) não existe na DLL.
 - Implementado: conexão, transações, DSQL, BLOB, mensagens de erro, funções de data e auxiliares. São as funções usadas pelo driver Devart e pelo IBExpert (ver [docs/api-surface.md](docs/api-surface.md)).
 - Não implementado: eventos (`isc_que_events`), API de serviços (backup, usuários), arrays, criação de banco. Essas funções devolvem o erro `not supported by ws-fbclient`.
-- Cada chamada que vai à rede custa uma ida e volta HTTPS. A DLL agrupa as chamadas para que um comando típico custe 3 requisições.
+- Cada chamada que vai à rede custa uma ida e volta HTTPS. A DLL agrupa as chamadas e lembra os comandos já preparados: um `SELECT` repetido com commit custa 1 requisição, um `INSERT`/`UPDATE` repetido com commit custa 2, um SQL novo custa 2 (ver [docs/performance.md](docs/performance.md) para medir e [docs/client-setup.md](docs/client-setup.md) para o que o cache muda).
 
 ## Desenvolvimento
 

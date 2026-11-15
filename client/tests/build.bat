@@ -7,4 +7,6 @@ cd /d "%~dp0"
 if not exist ..\bin\tests mkdir ..\bin\tests
 if not exist ..\bin\dcu\tests mkdir ..\bin\dcu\tests
 dcc32 -B -Q -NSSystem;Winapi;System.Win -E..\bin\tests -NU..\bin\dcu\tests -U"%BDS%\source\DUnitX" fbhttpTests.dpr || exit /b 1
+rem TestTransport checks the per-request diagnostic log.
+set FBHTTP_DEBUG_LOG=%CD%\..\bin\tests\ws-fbclient-debug.log
 ..\bin\tests\fbhttpTests.exe

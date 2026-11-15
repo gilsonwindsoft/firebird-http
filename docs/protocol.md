@@ -1,7 +1,11 @@
-# Protocolo fbhttp v1
+# Protocolo fbhttp v2
 
 Contrato binário entre `ws-fbclient.dll` (cliente) e `fbhttp-gateway` (servidor).
-Requisitos: `openspec/changes/add-dbexpress-http-driver/specs/gateway-protocol/spec.md`.
+Requisitos: `openspec/specs/gateway-protocol/spec.md`.
+
+A versão 2 substitui a 1 (nunca houve instalação em produção com a 1; o gateway
+recusa qualquer versão diferente de 2). O que ela acrescenta está na seção
+[Versão 2](#versão-2) e marcado com **v2** nas tabelas.
 
 ## Transporte
 
@@ -26,7 +30,7 @@ Tudo little-endian.
 ## Requisição
 
 ```
-u32 version        = 1
+u32 version        = 2
 u32 seq            1 no ATTACH; depois +1 a cada requisição
 u16 count
 count × op:
@@ -107,9 +111,9 @@ Handles (`db`, `tr`, `stmt`, `blob`) são IDs `u32` opacos da sessão. Zero é i
 | 13 | COMMIT_RETAINING | `u32 tr` | — |
 | 14 | ROLLBACK_RETAINING | `u32 tr` | — |
 | 15 | TRANSACTION_INFO | `u32 tr`, `bytes items`, `u32 buflen` | `bytes result` |
-| 20 | PREPARE | `u32 db`, `u32 tr`, `u32 stmt` (0 = alocar), `u16 dialect`, `str sql`, `bytes info_items`, `u32 info_buflen` | `u32 stmt`, `i32 stmt_type`, `desc out`, `desc in`, `bytes info` |
+| 20 | PREPARE | `u32 db`, `u32 tr`, `u32 stmt` (0 = alocar; ≥ 0x80000000 = alocar com id do cliente, **v2**; outro = repreparar), `u16 dialect`, `str sql`, `bytes info_items`, `u32 info_buflen` | `u32 stmt`, `i32 stmt_type`, `desc out`, `desc in`, `bytes info` |
 | 21 | FREE | `u32 stmt`, `u16 option` (1 close, 2 drop, 4 unprepare) | — |
-| 22 | EXECUTE | `u32 tr`, `u32 stmt`, `u16 dialect`, `layout in` + `linha` (se n≠0xFFFF), `layout out`, `u32 fetch` | `u8 kind` + dados (abaixo) |
+| 22 | EXECUTE | `u32 tr`, `u32 stmt`, `u16 dialect`, `layout in` + `linha` (se n≠0xFFFF), `layout out`, `u32 fetch`, `u8 has_expected` + (se 1) `layout exp_out`, `layout exp_in` (**v2**) | `u8 kind` + dados (abaixo) |
 | 23 | EXECUTE_IMMEDIATE | `u32 db`, `u32 tr`, `u16 dialect`, `str sql`, `layout in` + `linha`, `layout out` | `u32 tr` (pode mudar), `u8 hasrow` + `linha` |
 | 24 | FETCH | `u32 stmt`, `layout out` (0xFFFF = manter o atual), `u32 count` | `batch` |
 | 25 | SET_CURSOR_NAME | `u32 stmt`, `str name` | — |
@@ -125,6 +129,10 @@ Handles (`db`, `tr`, `stmt`, `blob`) são IDs `u32` opacos da sessão. Zero é i
 ### START_TRANSACTION com id do cliente
 
 Com `want ≥ 0x80000000`, o gateway registra a transação com esse id. Assim o cliente pode adiar o START e enviá-lo no mesmo lote da operação que usa a transação (ex.: START + PREPARE). Um id fora dessa faixa ou já em uso é erro de protocolo.
+
+### PREPARE com id do cliente (v2)
+
+Com `stmt ≥ 0x80000000`, o gateway aloca um comando novo e o registra com esse id, para que o EXECUTE do mesmo lote o use. Um id já em uso na sessão é erro de protocolo (categoria 3). Se a preparação falhar, o id não fica registrado e pode ser usado de novo. Transações e comandos compartilham a faixa e o mapa de handles da sessão: o cliente não pode repetir um id entre os dois.
 
 ### PREPARE com itens de informação
 
@@ -142,11 +150,29 @@ Modo de execução:
 
 Erros e comportamento são os do `libfbclient`. Exemplo: SELECT singleton sem linhas devolve `isc_stream_eof`.
 
+Descrição esperada (`has_expected = 1`, v2): `exp_out` e `exp_in` são os tipos (tipo, escala, subtipo, tamanho) das colunas e dos parâmetros que o cliente respondeu ao driver a partir do seu cache de preparação, quando o PREPARE veio neste mesmo lote. O gateway compara com a descrição real do comando preparado. Diferença (DDL entre a preparação guardada e esta) responde erro de protocolo com a mensagem exata `fbhttp: statement description changed`, sem executar e sem invalidar a sessão. O cliente descarta a entrada do cache e devolve `isc_dsql_sqlda_err` ao driver. Com `has_expected = 0` nada é comparado.
+
 `kind` da resposta:
 
 - `0` — sem dados. Segue `bytes records`: resultado de `isc_dsql_sql_info(isc_info_sql_records)`, para o cliente responder "linhas afetadas" sem nova requisição.
 - `1` — `execute2` com saída (ex.: `EXECUTE PROCEDURE`). Segue `u8 hasrow` + `linha` e `bytes records`.
 - `2` — cursor aberto. Segue `bytes records` (lido logo após abrir, antes de buscar linhas, como o cliente nativo vê) e `batch` com até `fetch` linhas. `SELECT ... FOR UPDATE` (stmt_type 12) sempre usa no máximo 1 linha por lote, para `WHERE CURRENT OF` continuar correto.
+
+### Limite do lote em bytes (v2)
+
+EXECUTE e FETCH limitam o lote por linhas (`fetch`, teto `max_fetch_rows`) e por bytes (`max_batch_bytes`, padrão 4 MB, antes do gzip). Ao passar do limite de bytes o gateway para o lote com pelo menos uma linha e **sem** `eof`; o FETCH seguinte continua da linha seguinte. O cliente trata um lote menor que o pedido sem `eof` como lote normal.
+
+## Versão 2
+
+Diferenças para a versão 1:
+
+| Onde | Mudança |
+|---|---|
+| Requisição | `version = 2`; o gateway recusa outras com erro de protocolo que cita as versões aceitas |
+| PREPARE | `stmt ≥ 0x80000000` aloca com id do cliente |
+| EXECUTE | campo obrigatório `u8 has_expected` após `fetch`, seguido de `layout exp_out` e `layout exp_in` quando 1 |
+| EXECUTE/FETCH | lote limitado também por `max_batch_bytes` |
+| Erros | mensagem `fbhttp: statement description changed` (categoria 3) |
 
 ### OPEN_BLOB
 

@@ -16,8 +16,11 @@ uses
   fbhttp.Status in '..\src\fbhttp.Status.pas',
   fbhttp.Config in '..\src\fbhttp.Config.pas',
   fbhttp.Handles in '..\src\fbhttp.Handles.pas',
+  fbhttp.PrepCache in '..\src\fbhttp.PrepCache.pas',
   fbhttp.Transport in '..\src\fbhttp.Transport.pas',
   TestProtocol in 'TestProtocol.pas',
+  TestTransport in 'TestTransport.pas',
+  TestPrepCache in 'TestPrepCache.pas',
   TestStatus in 'TestStatus.pas',
   TestConfig in 'TestConfig.pas';
 

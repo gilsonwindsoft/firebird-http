@@ -6,14 +6,19 @@ unit fbhttp.Client;
     fetch inside a batch and static database info are local;
   - free_statement and blob close/cancel are deferred to the next request;
   - a transaction start is deferred and sent with its first use;
-  - an execute that opens a cursor brings the first batch of rows.
+  - an execute that opens a cursor brings the first batch of rows;
+  - a PREPARE of a SQL already prepared on this connection is answered from
+    the cache and sent with the first operation that uses the statement
+    (design D3); the gateway checks the description still matches;
+  - commit/rollback of a transaction that wrote nothing is deferred (D5)
+    and flushed by the next request, after deferred_flush_ms idle, or on detach.
   Every exported function locks its attachment, so one connection can be
   used from several threads (the driver does this). ASCII only. }
 
 interface
 
 uses
-  System.SysUtils, fbhttp.IBase;
+  System.SysUtils, fbhttp.IBase, fbhttp.Transport;
 
 // Exported API. All stdcall like ibase.h, except isc_start_transaction (cdecl varargs).
 function W_isc_attach_database(st: PISC_STATUS; namelen: SmallInt; name: PAnsiChar; db: PFB_API_HANDLE; dpblen: SmallInt; dpb: PAnsiChar): ISC_STATUS; stdcall;
@@ -87,6 +92,10 @@ procedure W_isc_encode_timestamp(tm: PCTm; ts: PISC_TIMESTAMP); stdcall;
 procedure W_isc_decode_date(q: PISC_QUAD; tm: PCTm); stdcall;
 procedure W_isc_encode_date(tm: PCTm; q: PISC_QUAD); stdcall;
 
+// ws-fbclient only: fills Stats (caller sets Stats.Size) with the process
+// network counters. Returns 0. Used by client/compare to count requests.
+function W_ws_fbclient_stats(Stats: PWsFbStats): Integer; stdcall;
+
 // Called by the generated stubs of functions this DLL does not implement.
 function NotSupported(st: PISC_STATUS): ISC_STATUS; stdcall;
 
@@ -94,7 +103,7 @@ implementation
 
 uses
   System.Classes, System.SyncObjs, System.Generics.Collections, System.Math, System.AnsiStrings,
-  fbhttp.Protocol, fbhttp.Status, fbhttp.Handles, fbhttp.Config, fbhttp.Transport;
+  fbhttp.Protocol, fbhttp.Status, fbhttp.Handles, fbhttp.Config, fbhttp.PrepCache;
 
 const
   CLIENT_VERSION = 'WI-V4.0.5 ws-fbclient (fbhttp 1)';
@@ -103,25 +112,48 @@ const
   // sql_info item lists the Devart driver uses (docs/api-surface.md).
   PREPARE_INFO_ITEMS: array[0..4] of Byte = (4, 7, 9, 25, 8);
   PREPARE_INFO_BUFLEN = 1024;
-  CLIENT_TR_BASE = $80000000;
+  // Ids the client chooses for transactions and statements it creates in
+  // the same request that uses them (docs/protocol.md). One counter for both.
+  CLIENT_ID_BASE = $80000000;
+  DESCRIPTION_CHANGED = 'fbhttp: statement description changed';
   // isc_database_info items that never change during a connection.
   STATIC_DB_ITEMS: set of Byte = [4, 11, 12, 13, 14, 32, 33, 62, 101, 103];
   PUT_FLUSH_BYTES = 1 shl 20;
 
 type
+  TFbTransaction = class;
+  TFbStatement = class;
+
+  // One queued operation. Tr: a START, so its transaction learns the
+  // outcome. Stmt: a PREPARE answered from the cache. Both nil otherwise.
+  TFbPendingOp = record
+    Op: TFbOp;
+    Tr: TFbTransaction;
+    Stmt: TFbStatement;
+  end;
+
   TFbAttachment = class
     Lock: TCriticalSection;
     Transport: TFbTransport;
     ServerId: Cardinal;
-    Pending: TList<TFbOp>;          // deferred operations
+    Pending: TList<TFbPendingOp>;   // sent before the next operations, in order
     DbInfo: TDictionary<RawByteString, TBytes>;
+    PrepCache: TFbPrepCache;
     Closed: Boolean;
     constructor Create(const Cfg: TFbHttpConfig);
     destructor Destroy; override;
+    // Queues an operation whose failure does not matter (frees, closes,
+    // read-only commits): it goes with the next request.
     procedure Defer(Code: Word; const W: TFbWriter);
+    procedure Queue(const Op: TFbOp; Tr: TFbTransaction; Stmt: TFbStatement);
+    // Queues the START of T once, before the operations that need it.
+    procedure QueueStart(T: TFbTransaction);
+    // Drops the references of pending ops to an object about to be freed.
+    procedure Forget(Obj: TObject);
     // Sends the pending ops, the START of Tr when it was not started yet,
     // then Ops. Returns the results of Ops. Raises on the first failed
     // non-deferred op; Tr.Started is set as soon as its START succeeded.
+    // Pending ops the gateway did not reach are queued again.
     function Send(const Ops: array of TFbOp; Tr: TObject = nil): TFbResults;
   end;
 
@@ -130,6 +162,8 @@ type
     Id: Cardinal;          // client-chosen gateway id
     Tpb: TBytes;
     Started: Boolean;      // START already accepted by the gateway
+    StartQueued: Boolean;  // START is in Pending
+    Wrote: Boolean;        // something that may write ran in it (D5)
   end;
 
   TFbStatement = class
@@ -139,6 +173,9 @@ type
     Prepared: Boolean;
     OutDesc, InDesc: TFbVars;
     PrepInfo: TBytes;
+    CacheKey: RawByteString;  // dialect + SQL of the last prepare
+    PrepPending: Boolean;     // the PREPARE is still in Pending
+    FromCache: Boolean;       // described from the cache; first EXECUTE sends the expected description
     Records: TBytes;
     Rows: TArray<TFbRow>;
     RowPos: Integer;
@@ -185,34 +222,6 @@ var
 
 { helpers }
 
-var
-  GDebugPath: string;
-  GDebugLock: TCriticalSection;
-
-// Optional diagnostics: FBHTTP_DEBUG_LOG=<file>. Never logs data or passwords.
-procedure DebugLog(const Msg: string);
-var
-  f: TextFile;
-begin
-  if GDebugPath = '' then
-    Exit;
-  GDebugLock.Enter;
-  try
-    AssignFile(f, GDebugPath);
-    if FileExists(GDebugPath) then
-      Append(f)
-    else
-      Rewrite(f);
-    try
-      Writeln(f, FormatDateTime('hh:nn:ss.zzz', Now), ' t', TThread.CurrentThread.ThreadID, ' ', Msg);
-    finally
-      CloseFile(f);
-    end;
-  except
-  end;
-  GDebugLock.Leave;
-end;
-
 function LayoutText(const L: TFbLayout): string;
 var
   i: Integer;
@@ -243,6 +252,18 @@ begin
   w.Bytes(T.Tpb);
   w.U32(T.Id);
   Result := MakeOp(OP_START_TRANSACTION, w);
+end;
+
+function NextClientId: Cardinal;
+begin
+  Result := CLIENT_ID_BASE or Cardinal(AtomicIncrement(GTrCounter) and $7FFFFFFF);
+end;
+
+// True for the gateway's "expected description differs" error (D4).
+function IsDescriptionChanged(const E: TFbError): Boolean;
+begin
+  Result := (E.Category = CAT_PROTOCOL) and (Length(E.Messages) > 0) and
+    SameText(string(E.Messages[0]), DESCRIPTION_CHANGED);
 end;
 
 function GetAtt(H: PFB_API_HANDLE): TFbAttachment;
@@ -449,12 +470,14 @@ constructor TFbAttachment.Create(const Cfg: TFbHttpConfig);
 begin
   Lock := TCriticalSection.Create;
   Transport := TFbTransport.Create(Cfg);
-  Pending := TList<TFbOp>.Create;
+  Pending := TList<TFbPendingOp>.Create;
   DbInfo := TDictionary<RawByteString, TBytes>.Create;
+  PrepCache := TFbPrepCache.Create(Cfg.PrepareCache);
 end;
 
 destructor TFbAttachment.Destroy;
 begin
+  PrepCache.Free;
   DbInfo.Free;
   Pending.Free;
   Transport.Free;
@@ -464,22 +487,72 @@ end;
 
 procedure TFbAttachment.Defer(Code: Word; const W: TFbWriter);
 begin
-  Pending.Add(MakeOp(Code, W, FLAG_DEFERRED));
+  Queue(MakeOp(Code, W, FLAG_DEFERRED), nil, nil);
+end;
+
+procedure TFbAttachment.Queue(const Op: TFbOp; Tr: TFbTransaction; Stmt: TFbStatement);
+var
+  p: TFbPendingOp;
+begin
+  p.Op := Op;
+  p.Tr := Tr;
+  p.Stmt := Stmt;
+  Pending.Add(p);
+end;
+
+procedure TFbAttachment.QueueStart(T: TFbTransaction);
+begin
+  if (T = nil) or T.Started or T.StartQueued then
+    Exit;
+  Queue(TrStartOp(T), T, nil);
+  T.StartQueued := True;
+end;
+
+procedure TFbAttachment.Forget(Obj: TObject);
+var
+  i: Integer;
+  p: TFbPendingOp;
+begin
+  for i := 0 to Pending.Count - 1 do
+  begin
+    p := Pending[i];
+    if (TObject(p.Tr) = Obj) or (TObject(p.Stmt) = Obj) then
+    begin
+      p.Tr := nil;
+      p.Stmt := nil;
+      Pending[i] := p;
+    end;
+  end;
 end;
 
 function TFbAttachment.Send(const Ops: array of TFbOp; Tr: TObject): TFbResults;
 var
+  pend: TArray<TFbPendingOp>;
   all: TArray<TFbOp>;
-  i, startIdx, firstOp: Integer;
+  i, j, startIdx, firstOp: Integer;
   raw: TFbResults;
   t: TFbTransaction;
   e: TFbError;
+
+  procedure Requeue(From: Integer);
+  var
+    k: Integer;
+  begin
+    // The gateway stops at the first failed non-deferred op: what it did
+    // not reach goes with the next request, in the same order.
+    for k := From to High(pend) do
+      Pending.Add(pend[k]);
+  end;
+
 begin
   t := TFbTransaction(Tr);
-  all := Pending.ToArray;
+  pend := Pending.ToArray;
   Pending.Clear;
+  SetLength(all, Length(pend));
+  for i := 0 to High(pend) do
+    all[i] := pend[i].Op;
   startIdx := -1;
-  if (t <> nil) and not t.Started then
+  if (t <> nil) and not t.Started and not t.StartQueued then
   begin
     startIdx := Length(all);
     all := all + [TrStartOp(t)];
@@ -487,23 +560,69 @@ begin
   firstOp := Length(all);
   for i := 0 to High(Ops) do
     all := all + [Ops[i]];
-  raw := Transport.CallRaw(all);
   SetLength(Result, 0);
+  if Length(all) = 0 then
+    Exit;
+  try
+    raw := Transport.CallRaw(all);
+  except
+    Requeue(0);
+    raise;
+  end;
   for i := 0 to High(raw) do
   begin
     if raw[i].Status = STATUS_OK then
     begin
       if i = startIdx then
         t.Started := True;
+      if i <= High(pend) then
+      begin
+        if pend[i].Tr <> nil then
+        begin
+          pend[i].Tr.Started := True;
+          pend[i].Tr.StartQueued := False;
+        end;
+        if pend[i].Stmt <> nil then
+          pend[i].Stmt.PrepPending := False;
+      end;
       if i >= firstOp then
         Result := Result + [raw[i]];
       Continue;
     end;
     if all[i].Flags and FLAG_DEFERRED <> 0 then
-      Continue; // deferred frees and closes: errors do not matter
+    begin
+      // Deferred frees, closes and read-only commits: the error does not matter.
+      if DecodeError(raw[i].Payload, e) then
+        DebugLog(Format('deferred op %d failed: %s', [all[i].Code, e.FirstMessage]));
+      Continue;
+    end;
     if not DecodeError(raw[i].Payload, e) then
       raise EFbTransport.Create('malformed error from gateway');
+    if i <= High(pend) then
+    begin
+      if pend[i].Tr <> nil then
+        pend[i].Tr.StartQueued := False; // the next use sends START again
+      if pend[i].Stmt <> nil then
+      begin
+        // Cached description no longer prepares: forget it, the driver gets
+        // the real error on the call that sent the request.
+        pend[i].Stmt.Prepared := False;
+        pend[i].Stmt.PrepPending := False;
+        pend[i].Stmt.FromCache := False;
+        PrepCache.Drop(pend[i].Stmt.CacheKey);
+      end;
+      Requeue(i + 1);
+    end
+    else
+      Requeue(Length(pend)); // nothing pending was skipped
     raise EFbRemote.Create(e);
+  end;
+  if Length(raw) < Length(pend) then
+  begin
+    // Unreachable by protocol (the gateway only stops on an error), but
+    // never lose a queued op.
+    for j := Length(raw) to High(pend) do
+      Pending.Add(pend[j]);
   end;
   if Length(Result) <> Length(Ops) then
     raise EFbTransport.Create('missing results from gateway');
@@ -522,7 +641,7 @@ var
   list: TArray<TFbAttachment>;
   a: TFbAttachment;
 begin
-  while GStop.WaitFor(15000) = wrTimeout do
+  while GStop.WaitFor(250) = wrTimeout do
   begin
     GAttLock.Enter;
     try
@@ -532,11 +651,24 @@ begin
     end;
     for a in list do
       try
-        if not a.Closed and (a.Transport.Config.KeepAliveSeconds > 0) and
+        if a.Closed then
+          Continue;
+        // Deferred commits and frees of an idle connection: send them now so
+        // the Firebird transaction does not stay open (D5). TryEnter: never
+        // block the application thread; it flushes on its next call anyway.
+        if (a.Pending.Count > 0) and (a.Transport.IdleMs >= a.Transport.Config.DeferredFlushMs) and
+          a.Lock.TryEnter then
+          try
+            if a.Pending.Count > 0 then
+              a.Send([]);
+          finally
+            a.Lock.Leave;
+          end;
+        if (a.Transport.Config.KeepAliveSeconds > 0) and
           (a.Transport.IdleSeconds >= a.Transport.Config.KeepAliveSeconds) then
           a.Transport.Ping;
       except
-        // A failed ping is reported by the next real call.
+        // A failed ping or flush is reported by the next real call.
       end;
   end;
 end;
@@ -682,7 +814,7 @@ begin
         raise EFbCode.Create(isc_bad_trans_handle, 'invalid transaction handle (expecting explicit transaction start)');
       t := TFbTransaction.Create;
       t.Att := GetAtt(db);
-      t.Id := CLIENT_TR_BASE or Cardinal(AtomicIncrement(GTrCounter) and $7FFFFFFF);
+      t.Id := NextClientId;
       SetLength(t.Tpb, Max(tpblen, 0));
       if Length(t.Tpb) > 0 then
         Move(tpb^, t.Tpb[0], Length(t.Tpb));
@@ -722,11 +854,18 @@ begin
       t.Att.Lock.Enter;
       try
         // Never started on the server: nothing to commit or roll back.
-        if t.Started then
+        if t.Started or t.StartQueued then
         begin
           w.U32(t.Id);
-          t.Att.Send([MakeOp(Code, w)]);
+          if t.Att.Transport.Config.DeferReadOnlyCommit and not t.Wrote then
+            // Nothing to make durable: the end goes with the next request,
+            // in order, or when the connection is idle (D5).
+            t.Att.Defer(Code, w)
+          else
+            t.Att.Send([MakeOp(Code, w)]);
         end;
+        if Final then
+          t.Att.Forget(t);
       finally
         t.Att.Lock.Leave;
       end;
@@ -832,6 +971,7 @@ begin
       text: RawByteString;
       w: TFbWriter;
       r: TFbReader;
+      entry: TFbPrepEntry;
     begin
       s := GetStmt(stmt);
       t := GetTr(tr);
@@ -842,24 +982,54 @@ begin
       s.Att.Lock.Enter;
       try
         ResetCursor(s);
-        w.U32(s.Att.ServerId);
-        w.U32(t.Id);
-        w.U32(s.ServerId);
-        w.U16(dialect);
-        w.Str(text);
-        w.Bytes(@PREPARE_INFO_ITEMS[0], Length(PREPARE_INFO_ITEMS));
-        w.U32(PREPARE_INFO_BUFLEN);
-        r := Reader(SendWithTr(t, s.Att, [MakeOp(OP_PREPARE, w)])[0]);
-        s.ServerId := r.U32;
-        s.StmtType := r.I32;
-        s.OutDesc := ReadDesc(r);
-        s.InDesc := ReadDesc(r);
-        s.PrepInfo := r.Bytes;
+        s.CacheKey := TFbPrepCache.KeyOf(dialect, text);
+        entry := s.Att.PrepCache.Find(s.CacheKey);
+        if (entry <> nil) and not s.PrepPending then
+        begin
+          // Known SQL: describe from the cache and send the PREPARE with the
+          // first operation that uses the statement (D3). A statement never
+          // seen by the gateway gets an id of ours.
+          if s.ServerId = 0 then
+            s.ServerId := NextClientId;
+          s.Att.QueueStart(t);
+          w.U32(s.Att.ServerId);
+          w.U32(t.Id);
+          w.U32(s.ServerId);
+          w.U16(dialect);
+          w.Str(text);
+          w.Bytes(@PREPARE_INFO_ITEMS[0], Length(PREPARE_INFO_ITEMS));
+          w.U32(PREPARE_INFO_BUFLEN);
+          s.Att.Queue(MakeOp(OP_PREPARE, w), nil, s);
+          s.PrepPending := True;
+          s.FromCache := True;
+          s.StmtType := entry.StmtType;
+          s.OutDesc := Copy(entry.OutDesc);
+          s.InDesc := Copy(entry.InDesc);
+          s.PrepInfo := Copy(entry.PrepInfo);
+        end
+        else
+        begin
+          w.U32(s.Att.ServerId);
+          w.U32(t.Id);
+          w.U32(s.ServerId);
+          w.U16(dialect);
+          w.Str(text);
+          w.Bytes(@PREPARE_INFO_ITEMS[0], Length(PREPARE_INFO_ITEMS));
+          w.U32(PREPARE_INFO_BUFLEN);
+          r := Reader(SendWithTr(t, s.Att, [MakeOp(OP_PREPARE, w)])[0]);
+          s.ServerId := r.U32;
+          s.StmtType := r.I32;
+          s.OutDesc := ReadDesc(r);
+          s.InDesc := ReadDesc(r);
+          s.PrepInfo := r.Bytes;
+          if r.Err then
+            raise EFbTransport.Create('malformed PREPARE response');
+          s.FromCache := False;
+          s.Att.PrepCache.Store(s.CacheKey, s.StmtType, s.OutDesc, s.InDesc, s.PrepInfo);
+        end;
         s.Records := nil;
         s.HasFetchLayout := False;
         s.FetchLayout := nil;
-        if r.Err then
-          raise EFbTransport.Create('malformed PREPARE response');
         s.Prepared := True;
       finally
         s.Att.Lock.Leave;
@@ -926,6 +1096,31 @@ end;
 // isc_dsql_execute / execute2. A nil outda on a cursor statement opens the
 // cursor and brings the first batch with the described layout (the driver
 // never changes the layout before fetching: docs/api-surface.md).
+// Expected description (D4): sent with the first EXECUTE of a statement
+// described from the cache, so the gateway refuses a stale description.
+procedure WriteExpected(var W: TFbWriter; S: TFbStatement);
+begin
+  if not S.FromCache then
+  begin
+    W.U8(0);
+    Exit;
+  end;
+  W.U8(1);
+  WriteLayout(W, DescLayout(S.OutDesc), True);
+  WriteLayout(W, DescLayout(S.InDesc), True);
+end;
+
+// The gateway refused a stale cached description (DDL since): drop the
+// entry and give the driver the error the native client gives for a wrong
+// XSQLDA. The next prepare of this SQL goes to the gateway.
+function StaleDescription(S: TFbStatement): EFbCode;
+begin
+  S.Att.PrepCache.Drop(S.CacheKey);
+  S.Prepared := False;
+  S.FromCache := False;
+  Result := EFbCode.Create(isc_dsql_sqlda_err, DESCRIPTION_CHANGED + ' (schema changed since the statement was cached; prepare again)');
+end;
+
 function DoExecute(st: PISC_STATUS; tr, stmt: PFB_API_HANDLE; dialect: Word; inda, outda: PXSQLDA): ISC_STATUS;
 begin
   Result := Guarded(st, procedure
@@ -950,6 +1145,9 @@ begin
       s.Att.Lock.Enter;
       try
         ResetCursor(s);
+        // Anything but a plain SELECT may write (FOR UPDATE, procedures, DML, DDL).
+        if s.StmtType <> STMT_SELECT then
+          t.Wrote := True;
         WriteInput(input, inda);
         w.U32(t.Id);
         w.U32(s.ServerId);
@@ -962,7 +1160,17 @@ begin
         else
           WriteLayout(w, nil, False);
         w.U32(fetch);
-        r := Reader(SendWithTr(t, s.Att, [MakeOp(OP_EXECUTE, w)])[0]);
+        WriteExpected(w, s);
+        try
+          r := Reader(SendWithTr(t, s.Att, [MakeOp(OP_EXECUTE, w)])[0]);
+        except
+          on E: EFbRemote do
+            if IsDescriptionChanged(E.Error) then
+              raise StaleDescription(s)
+            else
+              raise;
+        end;
+        s.FromCache := False;
         kind := r.U8;
         case kind of
           0:
@@ -1030,6 +1238,8 @@ begin
         SetString(text, sql, len);
       a.Lock.Enter;
       try
+        if t <> nil then
+          t.Wrote := True; // EXECUTE IMMEDIATE is DDL or DML in practice
         w.U32(a.ServerId);
         if t = nil then w.U32(0) else w.U32(t.Id);
         w.U16(dialect);
@@ -1106,6 +1316,7 @@ begin
             w.Raw(Pointer(s.LastInput), Length(s.LastInput));
             WriteLayout(w, s.FetchLayout, True);
             w.U32(s.Att.Transport.Config.FetchRows);
+            w.U8(0); // already executed once: description checked then
             r := Reader(s.Att.Send([MakeOp(OP_EXECUTE, w)])[0]);
             if r.U8 <> 2 then
               raise EFbTransport.Create('malformed EXECUTE response');
@@ -1139,6 +1350,18 @@ begin
     Result := 100;
 end;
 
+// Removes the queued PREPARE of S (caller holds the attachment lock).
+procedure DropPendingPrepare(S: TFbStatement);
+var
+  i: Integer;
+begin
+  for i := S.Att.Pending.Count - 1 downto 0 do
+    if (S.Att.Pending[i].Stmt = S) and (S.Att.Pending[i].Op.Code = OP_PREPARE) then
+      S.Att.Pending.Delete(i);
+  S.PrepPending := False;
+  S.FromCache := False;
+end;
+
 function W_isc_dsql_free_statement(st: PISC_STATUS; stmt: PFB_API_HANDLE; option: Word): ISC_STATUS; stdcall;
 begin
   Result := Guarded(st, procedure
@@ -1155,6 +1378,13 @@ begin
         begin
           s.CursorOpen := False; // drop/unprepare close the cursor too
           s.Rows := nil;
+          if s.PrepPending then
+          begin
+            // Prepared from the cache and never used: the gateway never saw
+            // it. Drop the queued PREPARE instead of sending PREPARE + FREE.
+            DropPendingPrepare(s);
+            s.ServerId := 0;
+          end;
           if s.ServerId <> 0 then
           begin
             w.U32(s.ServerId);
@@ -1163,6 +1393,8 @@ begin
           end;
           if option = DSQL_unprepare then
             s.Prepared := False;
+          if option = DSQL_drop then
+            s.Att.Forget(s);
         end;
       finally
         s.Att.Lock.Leave;
@@ -1312,6 +1544,7 @@ begin
         b.Segments := TList<TBytes>.Create;
         a.Lock.Enter;
         try
+          t.Wrote := True;
           w.U32(a.ServerId);
           w.U32(t.Id);
           w.Bytes(bpb, Max(bpblen, 0));
@@ -1797,9 +2030,23 @@ begin
   Result := isc_wish_list;
 end;
 
+function W_ws_fbclient_stats(Stats: PWsFbStats): Integer; stdcall;
+var
+  g: TWsFbStats;
+  n: Cardinal;
+begin
+  Result := 0;
+  if Stats = nil then
+    Exit;
+  g := GlobalStats;
+  n := Stats^.Size;
+  if n > SizeOf(g) then
+    n := SizeOf(g);
+  Move(g, Stats^, n);
+  Stats^.Size := n;
+end;
+
 initialization
-  GDebugLock := TCriticalSection.Create;
-  GDebugPath := GetEnvironmentVariable('FBHTTP_DEBUG_LOG');
   GAttachments := TList<TFbAttachment>.Create;
   GAttLock := TCriticalSection.Create;
   GStop := TEvent.Create(nil, True, False, '');

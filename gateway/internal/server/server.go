@@ -154,14 +154,17 @@ func (srv *Server) handleRPC(w http.ResponseWriter, r *http.Request) {
 	defer func() { s.touch(); s.busy.Add(-1) }()
 
 	s.mu.Lock()
-	resp, failed, ferr := srv.run(s, req)
+	resp, failed, ferr, fbTime := srv.run(s, req)
 	closed := s.closed
 	s.mu.Unlock()
 	if closed {
 		srv.remove(s, "detach")
 	}
 	writeBody(w, r, resp)
-	attrs := []any{"session", s.ID, "seq", req.Seq, "ops", opcodes(req), "error", failed, "ms", time.Since(start).Milliseconds()}
+	// fb_ms: time inside the operations (almost all of it in libfbclient).
+	// ms - fb_ms is HTTP, gzip and waiting for the session lock.
+	attrs := []any{"session", s.ID, "seq", req.Seq, "ops", opcodes(req), "error", failed,
+		"ms", time.Since(start).Milliseconds(), "fb_ms", fbTime.Milliseconds()}
 	if ferr != nil {
 		// Category and gds codes only: messages can contain data values.
 		attrs = append(attrs, "category", ferr.Category, "gds", gdsCodes(ferr))
@@ -183,16 +186,18 @@ func opcodes(req protocol.Request) []uint16 {
 // run applies the seq rules and executes the batch. Caller holds s.mu.
 // Waiting on s.mu also covers "same seq still running": the retry gets the
 // stored response once the original finishes.
-func (srv *Server) run(s *Session, req protocol.Request) (resp []byte, failed bool, ferr *protocol.Error) {
+// run executes a request's operations in order. fbTime is the time spent
+// inside the operations. Caller holds s.mu.
+func (srv *Server) run(s *Session, req protocol.Request) (resp []byte, failed bool, ferr *protocol.Error, fbTime time.Duration) {
 	switch {
 	case s.closed:
 		e := protoErr(protocol.CatSession, "fbhttp: invalid or expired session")
-		return errorResponse(req.Ops[0].Code, e), true, e
+		return errorResponse(req.Ops[0].Code, e), true, e, 0
 	case req.Seq == s.lastSeq:
-		return s.lastResp, false, nil
+		return s.lastResp, false, nil, 0
 	case req.Seq != s.lastSeq+1:
 		e := protoErr(protocol.CatProtocol, "fbhttp: out of order request: seq %d, expected %d", req.Seq, s.lastSeq+1)
-		return errorResponse(req.Ops[0].Code, e), true, e
+		return errorResponse(req.Ops[0].Code, e), true, e, 0
 	}
 	var results []protocol.Result
 	for _, op := range req.Ops {
@@ -202,7 +207,9 @@ func (srv *Server) run(s *Session, req protocol.Request) (resp []byte, failed bo
 			failed = true
 			break
 		}
+		opStart := time.Now()
 		payload, e := srv.execSafe(s, op)
+		fbTime += time.Since(opStart)
 		if e != nil {
 			results = append(results, protocol.Result{Code: op.Code, Status: protocol.StatusError, Payload: protocol.EncodeError(e)})
 			if op.Flags&protocol.FlagDeferred != 0 {
@@ -218,7 +225,7 @@ func (srv *Server) run(s *Session, req protocol.Request) (resp []byte, failed bo
 	}
 	resp = protocol.EncodeResponse(results)
 	s.lastSeq, s.lastResp = req.Seq, resp
-	return resp, failed, ferr
+	return resp, failed, ferr, fbTime
 }
 
 func gdsCodes(e *protocol.Error) []int64 {

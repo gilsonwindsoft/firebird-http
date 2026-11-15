@@ -68,6 +68,22 @@ func TestFileAndEnvPriority(t *testing.T) {
 	}
 }
 
+func TestMaxBatchBytes(t *testing.T) {
+	base := map[string]string{"FBHTTP_PLAIN_HTTP": "1", "FBHTTP_ALIASES": "a=fb:/a.fdb"}
+	c, err := Load("", envOf(base))
+	if err != nil || c.MaxBatchBytes != 4<<20 {
+		t.Fatalf("default: %v %d", err, c.MaxBatchBytes)
+	}
+	base["FBHTTP_MAX_BATCH_BYTES"] = "65536"
+	if c, err = Load("", envOf(base)); err != nil || c.MaxBatchBytes != 65536 {
+		t.Fatalf("env: %v %d", err, c.MaxBatchBytes)
+	}
+	base["FBHTTP_MAX_BATCH_BYTES"] = "0"
+	if _, err = Load("", envOf(base)); err == nil || !strings.Contains(err.Error(), "max_batch_bytes") {
+		t.Fatalf("zero: %v", err)
+	}
+}
+
 func TestBadAliasName(t *testing.T) {
 	_, err := Load("", envOf(map[string]string{"FBHTTP_PLAIN_HTTP": "1", "FBHTTP_ALIASES": "/db/x.fdb=fb:/x.fdb"}))
 	if err == nil {

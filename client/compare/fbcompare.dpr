@@ -28,10 +28,43 @@ uses
   MidasLib,
   DbxDevartInterBase;
 
+type
+  // ws-fbclient.dll export (client/src/fbhttp.Transport.pas TWsFbStats).
+  TWsFbStats = record
+    Size: Cardinal;
+    Requests, NetMs, BytesOut, BytesIn: Int64;
+  end;
+  TWsFbStatsFunc = function(Stats: Pointer): Integer; stdcall;
+
 var
   Conn: TSQLConnection;
   Dump, Timing: TStreamWriter;
   Failures: Integer;
+  StatsFunc: TWsFbStatsFunc; // nil with the native fbclient.dll
+
+{ Network counters of ws-fbclient.dll (the driver loaded it as fbclient.dll). }
+function NetStats: TWsFbStats;
+begin
+  FillChar(Result, SizeOf(Result), 0);
+  if not Assigned(StatsFunc) then
+    @StatsFunc := GetProcAddress(GetModuleHandle('fbclient.dll'), 'ws_fbclient_stats');
+  Result.Size := SizeOf(Result);
+  if Assigned(StatsFunc) then
+    StatsFunc(@Result);
+end;
+
+{ One timing line: step, ms and, with ws-fbclient.dll, requests and network ms since Before. }
+procedure WriteTiming(const Name: string; Ms: Int64; const Before: TWsFbStats);
+var
+  After: TWsFbStats;
+begin
+  After := NetStats;
+  if Assigned(StatsFunc) then
+    Timing.WriteLine(Format('%-28s %8d ms %6d req %8d net ms', [Name, Ms, After.Requests - Before.Requests, After.NetMs - Before.NetMs]))
+  else
+    Timing.WriteLine(Format('%-28s %8d ms', [Name, Ms]));
+  Timing.Flush;
+end;
 
 procedure W(const S: string);
 begin
@@ -184,8 +217,10 @@ end;
 procedure Step(const Name: string; Proc: TProc);
 var
   SW: TStopwatch;
+  Before: TWsFbStats;
 begin
   W('== ' + Name);
+  Before := NetStats;
   SW := TStopwatch.StartNew;
   try
     Proc;
@@ -193,8 +228,7 @@ begin
     on E: Exception do
       W('  error ' + E.ClassName + ': ' + OneLine(E.Message));
   end;
-  Timing.WriteLine(Format('%-28s %8d ms', [Name, SW.ElapsedMilliseconds]));
-  Timing.Flush;
+  WriteTiming(Name, SW.ElapsedMilliseconds, Before);
 end;
 
 procedure Check(Cond: Boolean; const What: string);
@@ -425,7 +459,8 @@ begin
     try
       try
         Conn.Open;
-        Timing.WriteLine(Format('%-28s %8d ms', ['connect', Total.ElapsedMilliseconds]));
+        // The DLL is only loaded by Open, so every counter started at zero.
+        WriteTiming('connect', Total.ElapsedMilliseconds, Default(TWsFbStats));
         RunAll;
         Conn.Close;
       finally
@@ -438,7 +473,7 @@ begin
         Inc(Failures);
       end;
     end;
-    Timing.WriteLine(Format('%-28s %8d ms', ['total', Total.ElapsedMilliseconds]));
+    WriteTiming('total', Total.ElapsedMilliseconds, Default(TWsFbStats));
   finally
     Conn.Free;
     Timing.Free;

@@ -12,6 +12,7 @@ uses
   fbhttp.Status in '..\src\fbhttp.Status.pas',
   fbhttp.Handles in '..\src\fbhttp.Handles.pas',
   fbhttp.Config in '..\src\fbhttp.Config.pas',
+  fbhttp.PrepCache in '..\src\fbhttp.PrepCache.pas',
   fbhttp.Transport in '..\src\fbhttp.Transport.pas',
   fbhttp.Client in '..\src\fbhttp.Client.pas';
 
@@ -779,6 +780,7 @@ exports
   W_isc_start_transaction name 'isc_start_transaction',
   W_isc_transaction_info name 'isc_transaction_info',
   W_isc_vax_integer name 'isc_vax_integer',
+  W_ws_fbclient_stats name 'ws_fbclient_stats',
   W_isc_get_client_major_version name 'isc_get_client_major_version',
   W_isc_get_client_minor_version name 'isc_get_client_minor_version',
   U_fb_cancel_operation name 'fb_cancel_operation',

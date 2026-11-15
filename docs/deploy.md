@@ -11,6 +11,7 @@ estação (ws-fbclient.dll) --HTTPS--> nginx :443 --HTTP--> gateway 127.0.0.1:80
 - Docker Engine 24+ com o plugin `docker compose`.
 - nginx com certificado TLS válido para o nome público do gateway (por exemplo, Let's Encrypt).
 - Acesso de rede do container ao Firebird (porta 3050).
+- **Gateway no mesmo host do Firebird**, ou numa rede com menos de 1 ms até ele. Cada requisição da estação vira de 5 a 10 chamadas ao `libfbclient`, e cada uma paga a latência entre gateway e Firebird. Em outra zona ou datacenter (2 ms), isso soma 10 a 20 ms por requisição que nenhuma otimização da DLL recupera. Confira pelo `fb_ms` do log (seção Operação).
 
 ## Instalação
 
@@ -29,7 +30,8 @@ A configuração vem de variáveis de ambiente, num `.env` ao lado do `docker-co
 | `FBHTTP_TRUSTED_PROXIES` | Endereços (IP ou CIDR, separados por vírgula) do proxy reverso. Só deles o gateway aceita o cabeçalho `X-Real-IP` com o IP real da estação. Padrão: `127.0.0.1,172.16.0.0/12,10.0.0.0/8`, que cobre nginx no mesmo host e o proxy do Coolify (redes do Docker). |
 | `FBHTTP_MAX_SESSIONS`, `FBHTTP_MAX_SESSIONS_PER_IP` | Limites de conexões simultâneas (padrão 500 e 50). O limite por IP usa o IP real da estação. |
 | `FBHTTP_IDLE_TIMEOUT_SECONDS` | Sessão sem atividade é encerrada com rollback (padrão 600). Uma estação que cai no meio de uma transação segura os locks dela até esse tempo. Mantenha acima do dobro do `keepalive_seconds` da DLL (padrão 120). |
-| `FBHTTP_MAX_FETCH_ROWS`, `FBHTTP_MAX_INLINE_BLOB`, `FBHTTP_MAX_BODY_BYTES` | Limites de lote (5000), BLOB embutido (1 MB) e tamanho da requisição (64 MB). Para usar, acrescente no `environment` do `docker-compose.yml`. |
+| `FBHTTP_MAX_FETCH_ROWS`, `FBHTTP_MAX_INLINE_BLOB`, `FBHTTP_MAX_BODY_BYTES` | Limites de lote (5000 linhas), BLOB embutido (1 MB) e tamanho da requisição (64 MB). Para usar, acrescente no `environment` do `docker-compose.yml`. |
+| `FBHTTP_MAX_BATCH_BYTES` | Um lote de linhas para antes de `fetch_rows` quando chega a esse tamanho (padrão 4 MB, antes do gzip), com pelo menos uma linha. Limita a memória por cursor no gateway e na estação. |
 | `FBHTTP_SET_BIND` | Enviado como `isc_dpb_set_bind` (Firebird 4+). Padrão: `int128 to legacy;decfloat to legacy;time zone to legacy`, para que FB 4/5 devolvam os tipos de FB 3 (`BIGINT`, `DOUBLE`, `TIMESTAMP`) que drivers antigos entendem. `none` desliga. Para usar, acrescente no `environment`. |
 
 Restrinja no Firebird o que pode ser aberto. No `firebird.conf`, use `DatabaseAccess = Restrict /caminho/dos/dados` (ou `None`, para aceitar só aliases do `databases.conf`). Sem isso, um usuário com senha válida pode abrir qualquer `.fdb` que o servidor Firebird alcança.
@@ -83,6 +85,13 @@ O proxy do Coolify (Traefik) já envia `X-Real-IP` e não corta respostas demora
 - **Atualizar:** `git pull && docker compose up -d --build`. O `stop_grace_period` (40 s) deixa o gateway fazer rollback das transações abertas e desconectar antes de sair.
 - **Parar:** `docker compose down`. Sessões abertas recebem rollback; os clientes recebem "conexão perdida" e reconectam.
 - **Logs:** `docker compose logs -f`. Log JSON com sessões, erros e duração das requisições. Rotação já configurada (5 × 20 MB). Senhas, tokens e valores de parâmetros SQL nunca aparecem no log.
+- **Rede ou banco?** Cada requisição gera uma linha `"msg":"request"` com `"ops"` (operações do lote), `"ms"` (tempo total no gateway) e `"fb_ms"` (tempo dentro das operações, quase todo no `libfbclient`):
+
+  ```json
+  {"msg":"request","session":"a1b2c3d4","seq":12,"ops":[10,20,22],"error":false,"ms":9,"fb_ms":8}
+  ```
+
+  `fb_ms` alto é o Firebird (SQL lento) ou a distância entre gateway e Firebird. `ms - fb_ms` alto é HTTP, gzip ou fila da sessão. O tempo que a estação mede (`FBHTTP_DEBUG_LOG`, `ms=`) menos o `ms` do gateway é a latência da internet. Ver [performance.md](performance.md).
 - **Firewall:** exponha só a porta 443 do nginx. As portas 8080 do gateway e 3050 do Firebird não precisam ficar acessíveis de fora.
 
 ## Rollback (voltar à conexão direta)

@@ -23,7 +23,10 @@ type handle struct {
 	h    fb.Handle
 	stmt *fb.Stmt
 	out  protocol.Layout // fetch layout of an open cursor
-	sql  string          // for FBHTTP_DEBUG_SQL only
+	// Types of the prepared statement's columns and parameters, compared
+	// with the description the client expects (deferred PREPARE).
+	outDesc, inDesc protocol.Layout
+	sql             string // for FBHTTP_DEBUG_SQL only
 }
 
 // Session is one Firebird attachment and all handles created on it.
@@ -58,9 +61,9 @@ func (s *Session) idleFor(now time.Time) time.Duration {
 	return now.Sub(time.Unix(0, s.lastActive.Load()))
 }
 
-// clientIDBase starts the id range clients may choose (START_TRANSACTION),
-// so a request can start a transaction and use it in the same batch.
-// Gateway ids count up from 1 and never reach it.
+// clientIDBase starts the id range clients may choose (START_TRANSACTION,
+// PREPARE), so a request can start a transaction or prepare a statement and
+// use it in the same batch. Gateway ids count up from 1 and never reach it.
 const clientIDBase = 0x80000000
 
 func (s *Session) add(h *handle) uint32 {

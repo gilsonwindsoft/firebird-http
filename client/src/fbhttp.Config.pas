@@ -9,9 +9,12 @@ unit fbhttp.Config;
   url=https://gateway.example.com:8443
   connect_timeout_ms=10000
   response_timeout_ms=1800000
-  fetch_rows=1000
+  fetch_rows=5000
   inline_blob_bytes=65536
   keepalive_seconds=120
+  prepare_cache=256
+  defer_readonly_commit=1
+  deferred_flush_ms=1000
   allow_plain_http=0
   allow_invalid_certificate=0 }
 
@@ -25,6 +28,12 @@ type
     FetchRows: Integer;
     InlineBlobBytes: Integer;
     KeepAliveSeconds: Integer;
+    // Prepared statements remembered per connection (0 = no cache).
+    PrepareCache: Integer;
+    // Commit/rollback of a transaction that wrote nothing goes with the next request.
+    DeferReadOnlyCommit: Boolean;
+    // Pending deferred operations are sent after this much idle time.
+    DeferredFlushMs: Integer;
     AllowPlainHttp: Boolean;
     AllowInvalidCertificate: Boolean;
     IniPath: string;
@@ -63,11 +72,14 @@ var
     Result := StrToIntDef(Str(Key, EnvName, ''), Default);
   end;
 
-  function Bool(const Key, EnvName: string): Boolean;
+  function Bool(const Key, EnvName: string; Default: Boolean = False): Boolean;
   var
     v: string;
   begin
-    v := LowerCase(Str(Key, EnvName, '0'));
+    if Default then
+      v := LowerCase(Str(Key, EnvName, '1'))
+    else
+      v := LowerCase(Str(Key, EnvName, '0'));
     Result := (v = '1') or (v = 'true') or (v = 'yes');
   end;
 
@@ -82,9 +94,12 @@ begin
       Delete(Result.Url, Length(Result.Url), 1);
     Result.ConnectTimeoutMs := Int('connect_timeout_ms', 'FBHTTP_CONNECT_TIMEOUT_MS', 10000);
     Result.ResponseTimeoutMs := Int('response_timeout_ms', 'FBHTTP_RESPONSE_TIMEOUT_MS', 30 * 60 * 1000);
-    Result.FetchRows := Int('fetch_rows', 'FBHTTP_FETCH_ROWS', 1000);
+    Result.FetchRows := Int('fetch_rows', 'FBHTTP_FETCH_ROWS', 5000);
     Result.InlineBlobBytes := Int('inline_blob_bytes', 'FBHTTP_INLINE_BLOB_BYTES', 64 * 1024);
     Result.KeepAliveSeconds := Int('keepalive_seconds', 'FBHTTP_KEEPALIVE_SECONDS', 120);
+    Result.PrepareCache := Int('prepare_cache', 'FBHTTP_PREPARE_CACHE', 256);
+    Result.DeferReadOnlyCommit := Bool('defer_readonly_commit', 'FBHTTP_DEFER_READONLY_COMMIT', True);
+    Result.DeferredFlushMs := Int('deferred_flush_ms', 'FBHTTP_DEFERRED_FLUSH_MS', 1000);
     Result.AllowPlainHttp := Bool('allow_plain_http', 'FBHTTP_ALLOW_PLAIN_HTTP');
     Result.AllowInvalidCertificate := Bool('allow_invalid_certificate', 'FBHTTP_ALLOW_INVALID_CERTIFICATE');
   finally
@@ -105,7 +120,8 @@ begin
     Result := 'ws-fbclient: plain HTTP refused. Use https:// or set allow_plain_http=1 (test networks only).'
   else if not lower.StartsWith('https://') and not lower.StartsWith('http://') then
     Result := 'ws-fbclient: gateway URL must start with https://'
-  else if (FetchRows < 1) or (ConnectTimeoutMs < 1) or (ResponseTimeoutMs < 1) or (InlineBlobBytes < 0) then
+  else if (FetchRows < 1) or (ConnectTimeoutMs < 1) or (ResponseTimeoutMs < 1) or (InlineBlobBytes < 0) or
+    (PrepareCache < 0) or (DeferredFlushMs < 0) then
     Result := 'ws-fbclient: invalid numeric value in configuration';
 end;
 

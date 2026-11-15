@@ -40,6 +40,9 @@ type Config struct {
 	MaxSessionsPerIP int `json:"max_sessions_per_ip"`
 	MaxBodyBytes     int `json:"max_body_bytes"`
 	MaxFetchRows     int `json:"max_fetch_rows"`
+	// MaxBatchBytes stops a row batch early (at least one row) when the
+	// encoded rows reach this size, before gzip.
+	MaxBatchBytes    int `json:"max_batch_bytes"`
 	MaxInlineBlob    int `json:"max_inline_blob"`
 	IdleTimeoutSec   int `json:"idle_timeout_seconds"`
 	ShutdownGraceSec int `json:"shutdown_grace_seconds"`
@@ -52,6 +55,7 @@ func defaults() Config {
 		MaxSessionsPerIP: 50,
 		MaxBodyBytes:     64 << 20,
 		MaxFetchRows:     5000,
+		MaxBatchBytes:    4 << 20,
 		MaxInlineBlob:    1 << 20,
 		IdleTimeoutSec:   600,
 		ShutdownGraceSec: 20,
@@ -99,6 +103,7 @@ func applyEnv(c *Config, env func(string) string) error {
 	num := map[string]*int{
 		"FBHTTP_MAX_SESSIONS": &c.MaxSessions, "FBHTTP_MAX_SESSIONS_PER_IP": &c.MaxSessionsPerIP,
 		"FBHTTP_MAX_BODY_BYTES": &c.MaxBodyBytes, "FBHTTP_MAX_FETCH_ROWS": &c.MaxFetchRows,
+		"FBHTTP_MAX_BATCH_BYTES": &c.MaxBatchBytes,
 		"FBHTTP_MAX_INLINE_BLOB": &c.MaxInlineBlob, "FBHTTP_IDLE_TIMEOUT_SECONDS": &c.IdleTimeoutSec,
 		"FBHTTP_SHUTDOWN_GRACE_SECONDS": &c.ShutdownGraceSec,
 	}
@@ -168,7 +173,8 @@ func (c *Config) validate() error {
 		}
 	}
 	for k, v := range map[string]int{"max_sessions": c.MaxSessions, "max_sessions_per_ip": c.MaxSessionsPerIP,
-		"max_body_bytes": c.MaxBodyBytes, "max_fetch_rows": c.MaxFetchRows, "idle_timeout_seconds": c.IdleTimeoutSec} {
+		"max_body_bytes": c.MaxBodyBytes, "max_fetch_rows": c.MaxFetchRows, "max_batch_bytes": c.MaxBatchBytes,
+		"idle_timeout_seconds": c.IdleTimeoutSec} {
 		if v <= 0 {
 			errs = append(errs, fmt.Errorf("%s: must be > 0", k))
 		}

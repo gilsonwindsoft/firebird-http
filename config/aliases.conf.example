@@ -1,0 +1,8 @@
+# Aliases do gateway: um por linha, "nome = destino".
+# O destino é uma connection string do Firebird: host:/caminho/banco.fdb
+# ou host:alias_do_databases.conf. O nome não pode ter ':', '/' ou '\'.
+# O gateway relê este arquivo a cada 60 segundos; não é preciso reiniciar.
+#
+# erp     = 10.0.0.6:/firebird/data/erp.fdb
+# teste   = 10.0.0.6:erp_teste
+# filial2 = 10.0.0.7/3051:/dados/erp.fdb

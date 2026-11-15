@@ -8,7 +8,7 @@ import (
 )
 
 func TestClientIPBehindProxy(t *testing.T) {
-	env := map[string]string{"FBHTTP_PLAIN_HTTP": "1", "FBHTTP_ALIASES": "a=fb:/a.fdb", "FBHTTP_TRUSTED_PROXIES": "172.16.0.0/12"}
+	env := map[string]string{"FBHTTP_PLAIN_HTTP": "1", "FBHTTP_FIREBIRD_HOST": "fb", "FBHTTP_TRUSTED_PROXIES": "172.16.0.0/12"}
 	cfg, err := config.Load("", func(k string) string { return env[k] })
 	if err != nil {
 		t.Fatal(err)

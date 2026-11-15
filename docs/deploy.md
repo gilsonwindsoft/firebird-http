@@ -26,7 +26,8 @@ A configuração vem de variáveis de ambiente, num `.env` ao lado do `docker-co
 | Variável | Uso |
 |---|---|
 | `FBHTTP_FIREBIRD_HOST` | **Obrigatória.** Servidor Firebird (`host` ou `host/porta`). O `Database` que a estação manda (caminho ou alias do `databases.conf`) é aberto nesse servidor. O host que vem na frente (`localhost:`, `servidor/3050:`) é ignorado. Pedidos com um segundo host, UNC (`\\host\...`) ou URL (`inet://`) são recusados. |
-| `FBHTTP_ALIASES` | Opcional. Nomes que vão para outro servidor ou caminho, separados por `;`: `nome=host:/caminho/banco.fdb`. Têm prioridade sobre `FBHTTP_FIREBIRD_HOST`. |
+| `FBHTTP_ALIASES_FILE` | Opcional. Caminho, dentro do container, do arquivo de aliases: nomes que vão para outro servidor ou caminho. Use `/config/aliases.conf`. Os aliases têm prioridade sobre `FBHTTP_FIREBIRD_HOST`. Veja [Aliases](#aliases). |
+| `FBHTTP_CONFIG_DIR` | Pasta do host montada em `/config` no container (padrão `./config`, ao lado do `docker-compose.yml`). Só é usada pelo `docker-compose.yml`. |
 | `FBHTTP_TRUSTED_PROXIES` | Endereços (IP ou CIDR, separados por vírgula) do proxy reverso. Só deles o gateway aceita o cabeçalho `X-Real-IP` com o IP real da estação. Padrão: `127.0.0.1,172.16.0.0/12,10.0.0.0/8`, que cobre nginx no mesmo host e o proxy do Coolify (redes do Docker). |
 | `FBHTTP_MAX_SESSIONS`, `FBHTTP_MAX_SESSIONS_PER_IP` | Limites de conexões simultâneas (padrão 500 e 50). O limite por IP usa o IP real da estação. |
 | `FBHTTP_IDLE_TIMEOUT_SECONDS` | Sessão sem atividade é encerrada com rollback (padrão 600). Uma estação que cai no meio de uma transação segura os locks dela até esse tempo. Mantenha acima do dobro do `keepalive_seconds` da DLL (padrão 120). |
@@ -47,6 +48,43 @@ docker compose up -d --build
 docker compose ps          # STATUS deve ficar "healthy"
 curl -i http://127.0.0.1:8080/healthz   # 204
 ```
+
+## Aliases
+
+Aliases publicam nomes que vão para outro servidor Firebird ou outro caminho. Eles ficam num arquivo, um por linha:
+
+```
+# comentário
+erp     = 10.0.0.6:/firebird/data/erp.fdb
+teste   = 10.0.0.6:erp_teste
+filial2 = 10.0.0.7/3051:/dados/erp.fdb
+```
+
+O nome não pode ter `:`, `/` ou `\`, e não pode se repetir.
+
+Para ativar:
+
+```bash
+cp config/aliases.conf.example config/aliases.conf
+nano config/aliases.conf
+echo 'FBHTTP_ALIASES_FILE=/config/aliases.conf' >> .env
+docker compose up -d
+```
+
+Para guardar o arquivo em outra pasta do servidor, defina `FBHTTP_CONFIG_DIR` no `.env` (por exemplo `FBHTTP_CONFIG_DIR=/srv/fbhttp/config`). O `docker-compose.yml` monta essa pasta em `/config`, só leitura. Monte sempre a pasta, não o arquivo sozinho: editores e `sed -i` salvam criando um arquivo novo, e uma montagem de arquivo único continua mostrando o conteúdo antigo.
+
+Incluir ou remover servidores:
+
+- Edite o arquivo. O gateway o relê a cada 60 segundos, sem reinício e sem novo deploy. O log mostra `aliases reloaded` com os nomes incluídos e removidos.
+- Um alias novo pode levar até 60 segundos para aceitar conexões. Um alias removido continua aceitando conexões novas pelo mesmo tempo.
+- Remover um alias não derruba quem já está conectado nele. Essas sessões seguem até a estação fechar a conexão ou até `FBHTTP_IDLE_TIMEOUT_SECONDS`.
+- Se o arquivo ficar inválido (linha sem `=`, nome repetido ou com `:`), o gateway mantém os aliases anteriores e registra `aliases reload failed` com o número da linha. Corrija o arquivo; a próxima leitura aplica.
+- Na inicialização, um arquivo inexistente ou inválido impede o gateway de subir.
+- Um script que gera o arquivo deve gravar num arquivo temporário na mesma pasta e renomear, para o gateway nunca ler um arquivo pela metade.
+
+A consulta aos aliases só acontece quando uma estação abre a conexão. Consultas, fetch e commit não a usam. A releitura do arquivo a cada 60 segundos não tem custo perceptível, mesmo com centenas de aliases.
+
+**Migração de `FBHTTP_ALIASES`:** a variável foi removida. Se ela ainda estiver definida, o gateway a ignora e registra um aviso no log. Antes de atualizar a imagem, copie as entradas dela para `config/aliases.conf`, uma por linha (troque cada `;` por uma quebra de linha), apague `FBHTTP_ALIASES` do `.env` e defina `FBHTTP_ALIASES_FILE=/config/aliases.conf`.
 
 ## nginx
 
@@ -75,6 +113,7 @@ Teste a partir de outra máquina: `curl -i https://gateway.exemplo.com.br/health
 
 1. Crie um recurso do tipo **Docker Compose** apontando para este repositório (branch `main`, arquivo `docker-compose.yml`).
 2. Em **Environment Variables**, defina `FBHTTP_FIREBIRD_HOST` (e as opcionais, se precisar).
+   Para aliases, defina `FBHTTP_ALIASES_FILE=/config/aliases.conf` e `FBHTTP_CONFIG_DIR` com uma pasta persistente do servidor onde fica o `aliases.conf`. Edite o arquivo nessa pasta pelo SSH; o gateway aplica em até 60 segundos, sem novo deploy.
 3. No serviço `gateway`, defina o domínio com a porta do container: `https://gateway.exemplo.com.br:8080`. O proxy do Coolify cuida do certificado e encaminha para a porta 8080.
 4. Faça o deploy. O container deve ficar "healthy" e `https://gateway.exemplo.com.br/healthz` deve responder `204`.
 

@@ -7,3 +7,4 @@ tests/protocol-fixtures/
 client/compare/run/
 .DS_Store   
 *.exe
+config/aliases.conf

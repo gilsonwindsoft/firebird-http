@@ -14,8 +14,10 @@ services:
       # Firebird server ("host" or "host/port"). The database the client sends
       # (path or databases.conf alias) is opened there; its host is ignored.
       FBHTTP_FIREBIRD_HOST: ${FBHTTP_FIREBIRD_HOST:?set FBHTTP_FIREBIRD_HOST}
-      # Optional names that go elsewhere: name=host:/path.fdb;other=host:alias
-      FBHTTP_ALIASES: ${FBHTTP_ALIASES:-}
+      # Optional aliases file, one "name = host:/path.fdb" per line, reread every
+      # 60 s (no redeploy needed). Empty = no aliases file. Example:
+      # FBHTTP_ALIASES_FILE=/config/aliases.conf with config/aliases.conf on the host.
+      FBHTTP_ALIASES_FILE: ${FBHTTP_ALIASES_FILE:-}
       # Reverse proxy addresses allowed to send X-Real-IP.
       FBHTTP_TRUSTED_PROXIES: ${FBHTTP_TRUSTED_PROXIES:-127.0.0.1,172.16.0.0/12,10.0.0.0/8}
       FBHTTP_MAX_SESSIONS: ${FBHTTP_MAX_SESSIONS:-500}
@@ -23,6 +25,11 @@ services:
       FBHTTP_IDLE_TIMEOUT_SECONDS: ${FBHTTP_IDLE_TIMEOUT_SECONDS:-600}
       # A row batch stops early (at least one row) when it reaches this size.
       FBHTTP_MAX_BATCH_BYTES: ${FBHTTP_MAX_BATCH_BYTES:-4194304}
+    volumes:
+      # Host folder with aliases.conf, mounted at /config. Mount the folder, not
+      # the file: editors save by replacing the file and a single-file mount
+      # keeps showing the old content.
+      - ${FBHTTP_CONFIG_DIR:-./config}:/config:ro
     ports:
       # Published on all interfaces so an nginx container reaches it at
       # 172.17.0.1:8080. Docker bypasses ufw: block 8080 in the external firewall.

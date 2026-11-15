@@ -21,8 +21,10 @@ services:
     environment:
       FBHTTP_PLAIN_HTTP: "true"
       FBHTTP_LISTEN: ":8080"
-      FBHTTP_ALIASES: "${FBHTTP_ALIASES:-test=firebird:/var/lib/firebird/data/test.fdb}"
+      FBHTTP_ALIASES_FILE: /config/aliases.conf
       FBHTTP_DEBUG_SQL: "${FBHTTP_DEBUG_SQL:-0}"
+    volumes:
+      - ./tests/gateway-config:/config:ro
     ports:
       - "8080:8080"
     depends_on:

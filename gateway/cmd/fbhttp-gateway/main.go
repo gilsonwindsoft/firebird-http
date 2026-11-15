@@ -78,6 +78,12 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
 	go srv.RunReaper(ctx)
+	if cfg.AliasesFile != "" {
+		go cfg.WatchAliases(ctx, config.AliasReloadInterval, log)
+	}
+	if os.Getenv("FBHTTP_ALIASES") != "" {
+		log.Warn("FBHTTP_ALIASES was removed and is ignored; move the aliases to the file in FBHTTP_ALIASES_FILE")
+	}
 
 	errc := make(chan error, 1)
 	go func() {
@@ -88,7 +94,7 @@ func run(cfg *config.Config, log *slog.Logger) error {
 		}
 	}()
 	log.Info("gateway started", "listen", cfg.Listen, "tls", !cfg.PlainHTTP, "protocol", protocol.Version,
-		"fbclient", fb.ClientVersion(), "aliases", len(cfg.Aliases), "firebird_host", cfg.FirebirdHost)
+		"fbclient", fb.ClientVersion(), "aliases", cfg.AliasCount(), "aliases_file", cfg.AliasesFile, "firebird_host", cfg.FirebirdHost)
 
 	select {
 	case err := <-errc:

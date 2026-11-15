@@ -82,7 +82,7 @@ O gateway descarta o servidor que vem na frente e abre o resto no `FBHTTP_FIREBI
 | `fb.windsoft.me:ws-windsoft` (sem `.ini`) | `https://fb.windsoft.me` | `FIREBIRD_HOST:ws-windsoft` (alias do `databases.conf`) |
 | `localhost:ws-windsoft` (com `.ini`) | `url` do `.ini` | `FIREBIRD_HOST:ws-windsoft` |
 | `servidor/3050:/dados/erp.fdb` (com `.ini`) | `url` do `.ini` | `FIREBIRD_HOST:/dados/erp.fdb` |
-| `erp` (com `.ini`, nome em `FBHTTP_ALIASES`) | `url` do `.ini` | o destino configurado para `erp` |
+| `erp` (com `.ini`, nome no arquivo de aliases do gateway) | `url` do `.ini` | o destino configurado para `erp` |
 
 Usuário, senha, role e charset continuam os mesmos do Firebird. O gateway os repassa ao servidor.
 

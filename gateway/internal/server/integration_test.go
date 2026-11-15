@@ -8,10 +8,12 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -186,6 +188,46 @@ func TestAliasNotPublished(t *testing.T) {
 	}
 	if !strings.Contains(e.logs.String(), "database not allowed") {
 		t.Fatal("refusal not logged")
+	}
+}
+
+// Removing an alias from the aliases file keeps open sessions working and
+// refuses new ATTACH calls for it.
+func TestAliasRemovedKeepsOpenSessions(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "aliases.conf")
+	write := func(content string) {
+		if err := os.WriteFile(file, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("test = " + testDB + "\n")
+	vars := map[string]string{"FBHTTP_PLAIN_HTTP": "1", "FBHTTP_ALIASES_FILE": file}
+	cfg, err := config.Load("", func(k string) string { return vars[k] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(cfg, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	hs := httptest.NewServer(srv.Handler())
+	t.Cleanup(func() { hs.Close(); srv.CloseAll() })
+	c, perr := attachClient(t, hs.URL, "test", testUser, testPassword)
+	if perr != nil {
+		t.Fatalf("attach: %v", perr)
+	}
+
+	write("other = " + testDB + "\n")
+	if _, removed, _, err := cfg.ReloadAliases(); err != nil || len(removed) != 1 || removed[0] != "test" {
+		t.Fatalf("reload: %v %v", removed, err)
+	}
+	tr := c.startTr()
+	if rows, _ := c.query(tr, "SELECT 1 FROM RDB$DATABASE", nil, 10); len(rows) != 1 {
+		t.Fatalf("open session after removal: rows %+v", rows)
+	}
+	c.trOp(protocol.OpCommit, tr)
+	if _, perr := attachClient(t, hs.URL, "test", testUser, testPassword); perr == nil || perr.Category != protocol.CatSession {
+		t.Fatalf("new attach to removed alias: got %v", perr)
+	}
+	if _, perr := attachClient(t, hs.URL, "other", testUser, testPassword); perr != nil {
+		t.Fatalf("new alias: %v", perr)
 	}
 }
 

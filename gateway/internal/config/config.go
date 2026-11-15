@@ -3,13 +3,18 @@
 package config
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -29,6 +34,13 @@ type Config struct {
 	FirebirdHost string `json:"firebird_host"`
 	// Aliases maps the name clients send to the real Firebird connection string.
 	Aliases map[string]string `json:"aliases"`
+	// AliasesFile holds the aliases, one "name = target" per line. It is
+	// reread every AliasReloadInterval. It excludes Aliases.
+	AliasesFile string `json:"aliases_file"`
+	// table is the alias table in use after Load; reloads swap it whole.
+	table *atomic.Pointer[map[string]string]
+	// lastFile is the content of the last AliasesFile read (reload goroutine only).
+	lastFile []byte
 
 	// SetBind is sent as isc_dpb_set_bind (Firebird 4+) unless the client
 	// sends its own. The default makes Firebird 4/5 return the legacy types
@@ -89,12 +101,130 @@ func Load(path string, env func(string) string) (*Config, error) {
 	if err := applyEnv(&c, env); err != nil {
 		return nil, err
 	}
-	return &c, c.validate()
+	if c.AliasesFile != "" {
+		if len(c.Aliases) > 0 {
+			return nil, errors.New("invalid configuration: aliases_file and aliases: use only one")
+		}
+		b, err := os.ReadFile(c.AliasesFile)
+		if err != nil {
+			return nil, fmt.Errorf("config: aliases_file: %w", err)
+		}
+		if c.Aliases, err = parseAliases(b); err != nil {
+			return nil, fmt.Errorf("config: aliases_file %s: %w", c.AliasesFile, err)
+		}
+		c.lastFile = b
+	}
+	if err := c.validate(); err != nil {
+		return &c, err
+	}
+	c.table = &atomic.Pointer[map[string]string]{}
+	c.table.Store(&c.Aliases)
+	return &c, nil
 }
+
+// AliasReloadInterval is how often WatchAliases rereads AliasesFile.
+const AliasReloadInterval = 60 * time.Second
+
+// parseAliases reads "name = target" lines. Blank lines and lines starting
+// with '#' are skipped.
+func parseAliases(b []byte) (map[string]string, error) {
+	m := map[string]string{}
+	b = bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")) // UTF-8 BOM from Windows editors
+	for i, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		name, target, ok := strings.Cut(line, "=")
+		name, target = strings.TrimSpace(name), strings.TrimSpace(target)
+		switch {
+		case !ok || name == "" || target == "":
+			return nil, fmt.Errorf("line %d: expected \"name = target\"", i+1)
+		case strings.ContainsAny(name, ":/\\"):
+			return nil, fmt.Errorf("line %d: name %q must not contain ':', '/' or '\\'", i+1, name)
+		}
+		if _, dup := m[name]; dup {
+			return nil, fmt.Errorf("line %d: duplicate name %q", i+1, name)
+		}
+		m[name] = target
+	}
+	return m, nil
+}
+
+// ReloadAliases rereads AliasesFile. It does nothing when the content did not
+// change. On error the current table stays in use.
+func (c *Config) ReloadAliases() (added, removed []string, changed bool, err error) {
+	b, err := os.ReadFile(c.AliasesFile)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if bytes.Equal(b, c.lastFile) {
+		return nil, nil, false, nil
+	}
+	c.lastFile = b // a bad file is reported once, not on every tick
+	m, err := parseAliases(b)
+	if err != nil {
+		return nil, nil, true, err
+	}
+	if len(m) == 0 && c.FirebirdHost == "" {
+		return nil, nil, true, errors.New("no aliases and no firebird_host")
+	}
+	old := c.aliases()
+	for k := range m {
+		if _, ok := old[k]; !ok {
+			added = append(added, k)
+		}
+	}
+	for k := range old {
+		if _, ok := m[k]; !ok {
+			removed = append(removed, k)
+		}
+	}
+	slices.Sort(added)
+	slices.Sort(removed)
+	c.table.Store(&m)
+	return added, removed, true, nil
+}
+
+// WatchAliases calls ReloadAliases every interval until ctx ends.
+func (c *Config) WatchAliases(ctx context.Context, every time.Duration, log *slog.Logger) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	lastErr := ""
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		added, removed, changed, err := c.ReloadAliases()
+		switch {
+		case err != nil:
+			if err.Error() != lastErr { // a missing file is reported once, not every tick
+				log.Warn("aliases reload failed; previous aliases kept", "file", c.AliasesFile, "error", err.Error())
+			}
+			lastErr = err.Error()
+		case changed:
+			lastErr = ""
+			log.Info("aliases reloaded", "file", c.AliasesFile, "aliases", c.AliasCount(), "added", added, "removed", removed)
+		}
+	}
+}
+
+// aliases returns the alias table in use. A Config built without Load uses Aliases.
+func (c *Config) aliases() map[string]string {
+	if c.table != nil {
+		return *c.table.Load()
+	}
+	return c.Aliases
+}
+
+// AliasCount returns the number of aliases in use.
+func (c *Config) AliasCount() int { return len(c.aliases()) }
 
 func applyEnv(c *Config, env func(string) string) error {
 	str := map[string]*string{"FBHTTP_LISTEN": &c.Listen, "FBHTTP_TLS_CERT": &c.TLSCert, "FBHTTP_TLS_KEY": &c.TLSKey,
-		"FBHTTP_FIREBIRD_HOST": &c.FirebirdHost}
+		"FBHTTP_FIREBIRD_HOST": &c.FirebirdHost, "FBHTTP_ALIASES_FILE": &c.AliasesFile}
 	for k, p := range str {
 		if v := env(k); v != "" {
 			*p = v
@@ -133,17 +263,6 @@ func applyEnv(c *Config, env func(string) string) error {
 	// FBHTTP_TRUSTED_PROXIES=127.0.0.1,172.16.0.0/12
 	if v := env("FBHTTP_TRUSTED_PROXIES"); v != "" {
 		c.TrustedProxies = strings.Split(v, ",")
-	}
-	// FBHTTP_ALIASES=name=host:/path.fdb;other=host:/other.fdb
-	if v := env("FBHTTP_ALIASES"); v != "" {
-		c.Aliases = map[string]string{}
-		for _, part := range strings.Split(v, ";") {
-			name, target, ok := strings.Cut(strings.TrimSpace(part), "=")
-			if !ok || name == "" || target == "" {
-				return fmt.Errorf("config: FBHTTP_ALIASES: invalid item %q", part)
-			}
-			c.Aliases[name] = target
-		}
 	}
 	return nil
 }
@@ -218,7 +337,8 @@ func (c *Config) IsTrustedProxy(addr netip.Addr) bool {
 // Otherwise, when firebird_host is set, the database part (path or server
 // alias) is opened on that host and the host the client sent is ignored.
 func (c *Config) ResolveAlias(db string) (alias, target string, ok bool) {
-	if t, ok := c.Aliases[db]; ok {
+	aliases := c.aliases()
+	if t, ok := aliases[db]; ok {
 		return db, t, true
 	}
 	rest := db
@@ -227,7 +347,7 @@ func (c *Config) ResolveAlias(db string) (alias, target string, ok bool) {
 			rest = r
 		}
 	}
-	if t, ok := c.Aliases[rest]; ok {
+	if t, ok := aliases[rest]; ok {
 		return rest, t, true
 	}
 	if c.FirebirdHost == "" || !safeDatabase(rest) {

@@ -16,6 +16,8 @@ setlocal
 cd /d "%~dp0"
 if "%~3"=="" (echo usage: compare.bat label native_database http_database [Name=Value ...] & exit /b 2)
 set LABEL=%~1
+rem The label names a folder: a database string here means the label was forgotten.
+echo %LABEL%| findstr /r "[:/\\]" >nul && (echo First argument is the run label ^(e.g. fb3^), not a database. & echo usage: compare.bat label native_database http_database [Name=Value ...] & exit /b 2)
 set NATIVE_DB=%~2
 set HTTP_DB=%~3
 shift & shift & shift
@@ -49,8 +51,11 @@ copy /y "%DRIVER_DLL%" %OUT%\http >nul
 copy /y ..\bin\ws-fbclient\ws-fbclient.dll %OUT%\http\fbclient.dll >nul
 if defined WS_INI copy /y "%WS_INI%" %OUT%\http\ws-fbclient.ini >nul
 
+set FAILED=
 %OUT%\native\fbcompare.exe "%NATIVE_DB%" %FB_USER% %FB_PASSWORD% %OUT%\native.txt %EXTRA%
+if errorlevel 1 set FAILED=1
 %OUT%\http\fbcompare.exe "%HTTP_DB%" %FB_USER% %FB_PASSWORD% %OUT%\http.txt %EXTRA%
+if errorlevel 1 set FAILED=1
 
 echo.
 echo --- timings native / http
@@ -59,5 +64,8 @@ echo.
 type %OUT%\http.txt.timing.txt
 echo.
 fc %OUT%\native.txt %OUT%\http.txt > %OUT%\diff.txt
-if errorlevel 1 (echo DIFFERENT: see %OUT%\diff.txt & exit /b 1)
+set DIFF=%errorlevel%
+rem FATAL or FAIL lines (e.g. login refused on both sides) make an equal dump meaningless.
+if defined FAILED (echo FAILED: see FATAL/FAIL lines in %OUT%\native.txt and %OUT%\http.txt & exit /b 1)
+if not "%DIFF%"=="0" (echo DIFFERENT: see %OUT%\diff.txt & exit /b 1)
 echo SAME: %OUT%\native.txt = %OUT%\http.txt

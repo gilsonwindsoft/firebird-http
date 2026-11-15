@@ -9,9 +9,9 @@ unit fbhttp.Config;
   url=https://gateway.example.com:8443
   connect_timeout_ms=10000
   response_timeout_ms=1800000
-  fetch_rows=200
+  fetch_rows=1000
   inline_blob_bytes=65536
-  keepalive_seconds=300
+  keepalive_seconds=120
   allow_plain_http=0
   allow_invalid_certificate=0 }
 
@@ -82,9 +82,9 @@ begin
       Delete(Result.Url, Length(Result.Url), 1);
     Result.ConnectTimeoutMs := Int('connect_timeout_ms', 'FBHTTP_CONNECT_TIMEOUT_MS', 10000);
     Result.ResponseTimeoutMs := Int('response_timeout_ms', 'FBHTTP_RESPONSE_TIMEOUT_MS', 30 * 60 * 1000);
-    Result.FetchRows := Int('fetch_rows', 'FBHTTP_FETCH_ROWS', 200);
+    Result.FetchRows := Int('fetch_rows', 'FBHTTP_FETCH_ROWS', 1000);
     Result.InlineBlobBytes := Int('inline_blob_bytes', 'FBHTTP_INLINE_BLOB_BYTES', 64 * 1024);
-    Result.KeepAliveSeconds := Int('keepalive_seconds', 'FBHTTP_KEEPALIVE_SECONDS', 300);
+    Result.KeepAliveSeconds := Int('keepalive_seconds', 'FBHTTP_KEEPALIVE_SECONDS', 120);
     Result.AllowPlainHttp := Bool('allow_plain_http', 'FBHTTP_ALLOW_PLAIN_HTTP');
     Result.AllowInvalidCertificate := Bool('allow_invalid_certificate', 'FBHTTP_ALLOW_INVALID_CERTIFICATE');
   finally

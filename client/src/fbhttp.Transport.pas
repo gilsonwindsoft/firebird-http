@@ -46,10 +46,13 @@ type
     property Token: string read FToken write FToken;
   end;
 
+// gzip body (Content-Encoding: gzip from the gateway) to raw bytes.
+function Gunzip(const B: TBytes): TBytes;
+
 implementation
 
 uses
-  Winapi.Windows, fbhttp.IBase, fbhttp.Status;
+  Winapi.Windows, System.ZLib, fbhttp.IBase, fbhttp.Status;
 
 const
   CONTENT_TYPE = 'application/x-fbhttp';
@@ -95,6 +98,35 @@ begin
     FConfig.AllowInvalidCertificate;
 end;
 
+function Gunzip(const B: TBytes): TBytes;
+var
+  src: TBytesStream;
+  z: TZDecompressionStream;
+  dst: TBytesStream;
+  buf: array[0..65535] of Byte;
+  n: Integer;
+begin
+  src := TBytesStream.Create(B);
+  dst := TBytesStream.Create;
+  try
+    z := TZDecompressionStream.Create(src, 15 + 16); // 15 + 16: gzip header
+    try
+      // Read until 0: CopyFrom(z, 0) would ask the decompression stream for its Size.
+      repeat
+        n := z.Read(buf, SizeOf(buf));
+        if n > 0 then
+          dst.WriteBuffer(buf, n);
+      until n = 0;
+    finally
+      z.Free;
+    end;
+    Result := Copy(dst.Bytes, 0, dst.Size);
+  finally
+    dst.Free;
+    src.Free;
+  end;
+end;
+
 function TFbTransport.Post(const Body: TBytes): TBytes;
 var
   attempt: Integer;
@@ -102,10 +134,10 @@ var
   resp: IHTTPResponse;
   headers: TNetHeaders;
 begin
+  // The gateway gzips large responses; decompressed below (works on any Windows/Delphi version).
+  headers := [TNameValuePair.Create('Accept-Encoding', 'gzip')];
   if FToken <> '' then
-    headers := [TNameValuePair.Create('X-Session', FToken)]
-  else
-    headers := [];
+    headers := headers + [TNameValuePair.Create('X-Session', FToken)];
   attempt := 0;
   while True do
   begin
@@ -138,6 +170,10 @@ begin
         resp.ContentStream.Position := 0;
         if Length(Result) > 0 then
           resp.ContentStream.ReadBuffer(Result[0], Length(Result));
+        // Check the gzip magic too: a WinHTTP that already decompressed keeps the header.
+        if SameText(resp.HeaderValue['Content-Encoding'], 'gzip') and (Length(Result) >= 2) and
+          (Result[0] = $1F) and (Result[1] = $8B) then
+          Result := Gunzip(Result);
       end;
     413:
       raise EFbCode.Create(isc_random, 'fbhttp: request larger than the gateway limit (max_body_bytes)');

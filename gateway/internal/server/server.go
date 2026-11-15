@@ -2,6 +2,7 @@
 package server
 
 import (
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -13,6 +14,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -68,9 +70,31 @@ func (srv *Server) clientIP(r *http.Request) string {
 	return host
 }
 
-func writeBody(w http.ResponseWriter, b []byte) {
-	w.Header().Set("Content-Type", contentType)
-	w.Write(b)
+// gzipMin is the smallest body worth compressing; below it the gzip header
+// and CPU cost more than the bytes saved.
+const gzipMin = 1024
+
+var gzipPool = sync.Pool{New: func() any {
+	zw, _ := gzip.NewWriterLevel(nil, gzip.BestSpeed)
+	return zw
+}}
+
+// writeBody sends the response, gzip-compressed when the client accepts it.
+// Rows compress several times, which matters on slow links to a cloud database.
+func writeBody(w http.ResponseWriter, r *http.Request, b []byte) {
+	h := w.Header()
+	h.Set("Content-Type", contentType)
+	h.Set("Vary", "Accept-Encoding")
+	if len(b) < gzipMin || !strings.Contains(strings.ToLower(r.Header.Get("Accept-Encoding")), "gzip") {
+		w.Write(b)
+		return
+	}
+	h.Set("Content-Encoding", "gzip")
+	zw := gzipPool.Get().(*gzip.Writer)
+	zw.Reset(w)
+	zw.Write(b)
+	zw.Close()
+	gzipPool.Put(zw)
 }
 
 func errorResponse(code uint16, e *protocol.Error) []byte {
@@ -111,18 +135,18 @@ func (srv *Server) handleRPC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Version != protocol.Version {
-		writeBody(w, errorResponse(req.Ops[0].Code, protoErr(protocol.CatProtocol,
+		writeBody(w, r, errorResponse(req.Ops[0].Code, protoErr(protocol.CatProtocol,
 			"unsupported fbhttp protocol version %d; supported versions: %d", req.Version, protocol.Version)))
 		return
 	}
 	if req.Ops[0].Code == protocol.OpAttach {
-		writeBody(w, srv.attach(r, req))
+		writeBody(w, r, srv.attach(r, req))
 		return
 	}
 
 	s := srv.lookup(r.Header.Get("X-Session"))
 	if s == nil {
-		writeBody(w, errorResponse(req.Ops[0].Code, protoErr(protocol.CatSession, "fbhttp: invalid or expired session")))
+		writeBody(w, r, errorResponse(req.Ops[0].Code, protoErr(protocol.CatSession, "fbhttp: invalid or expired session")))
 		return
 	}
 	s.busy.Add(1)
@@ -136,7 +160,7 @@ func (srv *Server) handleRPC(w http.ResponseWriter, r *http.Request) {
 	if closed {
 		srv.remove(s, "detach")
 	}
-	writeBody(w, resp)
+	writeBody(w, r, resp)
 	attrs := []any{"session", s.ID, "seq", req.Seq, "ops", opcodes(req), "error", failed, "ms", time.Since(start).Milliseconds()}
 	if ferr != nil {
 		// Category and gds codes only: messages can contain data values.

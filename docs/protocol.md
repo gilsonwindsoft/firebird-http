@@ -45,6 +45,8 @@ count × result:
   bytes payload    resultado da operação, ou bloco de erro
 ```
 
+Com `Accept-Encoding: gzip` na requisição, o gateway comprime com gzip as respostas a partir de 1 KB e manda `Content-Encoding: gzip`. A `ws-fbclient.dll` sempre pede a compressão e descomprime a resposta. A requisição não é comprimida.
+
 ## Bloco de erro
 
 ```

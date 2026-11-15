@@ -809,3 +809,41 @@ func TestLegacyTypesByDefault(t *testing.T) {
 	native := types(newEnv(t, func(c *config.Config) { c.SetBind = &none }))
 	t.Logf("without set_bind: %v", native)
 }
+
+// A client layout with sqllen smaller than the type: libfbclient sizes the
+// message by sqllen and the server rejects it ("message length error"), so the
+// gateway buffers (allocated from sqllen) are never overrun. The session survives.
+func TestShortSqllenLayout(t *testing.T) {
+	e := newEnv(t, nil)
+	c := e.attach(t)
+	tr := c.startTr()
+	p, perr := c.prepare(tr, "SELECT CAST(? AS BIGINT) A, CAST(1.5 AS DOUBLE PRECISION) B, CURRENT_TIMESTAMP C FROM RDB$DATABASE")
+	if perr != nil {
+		t.Fatal(perr)
+	}
+	shrink := func(l protocol.Layout) protocol.Layout {
+		for i := range l {
+			l[i].Len = 1
+		}
+		return l
+	}
+	inL, outL := shrink(layoutOf(p.in)), shrink(layoutOf(p.out))
+	for i := 0; i < 200; i++ {
+		r, err := c.one(op(protocol.OpExecute, func(w *protocol.Writer) {
+			w.U32(tr)
+			w.U32(p.stmt)
+			w.U16(3)
+			protocol.WriteLayout(w, inL)
+			protocol.WriteRow(w, inL, []protocol.Value{{Data: []byte{7}}})
+			protocol.WriteLayout(w, outL)
+			w.U32(1)
+		}))
+		if err == nil {
+			t.Fatalf("short sqllen accepted (kind %d)", r.U8())
+		}
+		c.one(op(protocol.OpFree, func(w *protocol.Writer) { w.U32(p.stmt); w.U16(1) }))
+	}
+	if rows, _ := c.query(tr, "SELECT 1 FROM RDB$DATABASE", nil, 1); len(rows) != 1 {
+		t.Fatal("session not usable after bad layouts")
+	}
+}

@@ -17,12 +17,13 @@ type
     [Test] procedure GoFixtureError;
     [Test] procedure GoFixtureRow;
     [Test] procedure GoFixtureRequest;
+    [Test] procedure GoFixtureGzip;
   end;
 
 implementation
 
 uses
-  System.SysUtils, System.IOUtils, fbhttp.Protocol;
+  System.SysUtils, System.IOUtils, fbhttp.Protocol, fbhttp.Transport;
 
 function Fixture(const Name: string): TBytes;
 var
@@ -185,6 +186,16 @@ begin
   mine := EncodeRequest(2, [MakeOp(OP_FREE, free, FLAG_DEFERRED), MakeOp(OP_FETCH, fetch)]);
   Assert.AreEqual(Length(go), Length(mine));
   Assert.IsTrue(CompareMem(@go[0], @mine[0], Length(go)), 'bytes differ from the Go encoder');
+end;
+
+procedure TProtocolTests.GoFixtureGzip;
+var
+  plain, unz: TBytes;
+begin
+  plain := Fixture('error.bin');
+  unz := Gunzip(Fixture('gzip.bin'));
+  Assert.AreEqual(Length(plain), Length(unz));
+  Assert.IsTrue(CompareMem(@plain[0], @unz[0], Length(plain)));
 end;
 
 initialization

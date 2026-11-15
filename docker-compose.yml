@@ -20,7 +20,7 @@ services:
       FBHTTP_TRUSTED_PROXIES: ${FBHTTP_TRUSTED_PROXIES:-127.0.0.1,172.16.0.0/12,10.0.0.0/8}
       FBHTTP_MAX_SESSIONS: ${FBHTTP_MAX_SESSIONS:-500}
       FBHTTP_MAX_SESSIONS_PER_IP: ${FBHTTP_MAX_SESSIONS_PER_IP:-50}
-      FBHTTP_IDLE_TIMEOUT_SECONDS: ${FBHTTP_IDLE_TIMEOUT_SECONDS:-1800}
+      FBHTTP_IDLE_TIMEOUT_SECONDS: ${FBHTTP_IDLE_TIMEOUT_SECONDS:-600}
     ports:
       # Published on all interfaces so an nginx container reaches it at
       # 172.17.0.1:8080. Docker bypasses ufw: block 8080 in the external firewall.

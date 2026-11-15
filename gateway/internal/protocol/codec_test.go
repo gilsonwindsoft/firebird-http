@@ -1,6 +1,8 @@
 package protocol
 
 import (
+	"bytes"
+	"compress/gzip"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -111,6 +113,15 @@ func TestVaryingTooLong(t *testing.T) {
 	}
 }
 
+// gzipped is what the gateway sends with Content-Encoding: gzip.
+func gzipped(b []byte) []byte {
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	zw.Write(b)
+	zw.Close()
+	return buf.Bytes()
+}
+
 // TestWriteFixtures writes sample messages to testdata/ so the Delphi codec
 // tests (client/tests) can check they decode the same bytes.
 func TestWriteFixtures(t *testing.T) {
@@ -123,6 +134,7 @@ func TestWriteFixtures(t *testing.T) {
 	WriteRow(w, sampleLayout(), sampleRow())
 	files := map[string][]byte{
 		"error.bin": EncodeError(sampleError()),
+		"gzip.bin":  gzipped(EncodeError(sampleError())),
 		"row.bin":   w.B,
 		"request.bin": EncodeRequest(Request{Version: Version, Seq: 2, Ops: []Op{
 			{Code: OpFree, Flags: FlagDeferred, Payload: []byte{5, 0, 0, 0, 2, 0}},

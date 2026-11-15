@@ -53,7 +53,7 @@ func defaults() Config {
 		MaxBodyBytes:     64 << 20,
 		MaxFetchRows:     5000,
 		MaxInlineBlob:    1 << 20,
-		IdleTimeoutSec:   1800,
+		IdleTimeoutSec:   600,
 		ShutdownGraceSec: 20,
 	}
 }

@@ -28,7 +28,7 @@ A configuração vem de variáveis de ambiente, num `.env` ao lado do `docker-co
 | `FBHTTP_ALIASES` | Opcional. Nomes que vão para outro servidor ou caminho, separados por `;`: `nome=host:/caminho/banco.fdb`. Têm prioridade sobre `FBHTTP_FIREBIRD_HOST`. |
 | `FBHTTP_TRUSTED_PROXIES` | Endereços (IP ou CIDR, separados por vírgula) do proxy reverso. Só deles o gateway aceita o cabeçalho `X-Real-IP` com o IP real da estação. Padrão: `127.0.0.1,172.16.0.0/12,10.0.0.0/8`, que cobre nginx no mesmo host e o proxy do Coolify (redes do Docker). |
 | `FBHTTP_MAX_SESSIONS`, `FBHTTP_MAX_SESSIONS_PER_IP` | Limites de conexões simultâneas (padrão 500 e 50). O limite por IP usa o IP real da estação. |
-| `FBHTTP_IDLE_TIMEOUT_SECONDS` | Sessão sem atividade é encerrada com rollback (padrão 1800). |
+| `FBHTTP_IDLE_TIMEOUT_SECONDS` | Sessão sem atividade é encerrada com rollback (padrão 600). Uma estação que cai no meio de uma transação segura os locks dela até esse tempo. Mantenha acima do dobro do `keepalive_seconds` da DLL (padrão 120). |
 | `FBHTTP_MAX_FETCH_ROWS`, `FBHTTP_MAX_INLINE_BLOB`, `FBHTTP_MAX_BODY_BYTES` | Limites de lote (5000), BLOB embutido (1 MB) e tamanho da requisição (64 MB). Para usar, acrescente no `environment` do `docker-compose.yml`. |
 | `FBHTTP_SET_BIND` | Enviado como `isc_dpb_set_bind` (Firebird 4+). Padrão: `int128 to legacy;decfloat to legacy;time zone to legacy`, para que FB 4/5 devolvam os tipos de FB 3 (`BIGINT`, `DOUBLE`, `TIMESTAMP`) que drivers antigos entendem. `none` desliga. Para usar, acrescente no `environment`. |
 

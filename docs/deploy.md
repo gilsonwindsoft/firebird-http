@@ -87,7 +87,7 @@ O proxy do Coolify (Traefik) já envia `X-Real-IP` e não corta respostas demora
 
 ## Rollback (voltar à conexão direta)
 
-Nas estações, volte a usar o `fbclient.dll` nativo e o `Database` original (veja o README). O gateway pode continuar rodando ou ser parado com `docker compose down`.
+Nas estações, volte a usar o `fbclient.dll` nativo e o `Database` original (veja [client-setup.md](client-setup.md#rollback-voltar-à-conexão-direta)). O gateway pode continuar rodando ou ser parado com `docker compose down`.
 
 ## Ambiente de teste
 

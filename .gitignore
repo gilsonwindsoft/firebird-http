@@ -5,3 +5,4 @@ tests/protocol-fixtures/
 *.log
 .env
 client/compare/run/
+.DS_Store   

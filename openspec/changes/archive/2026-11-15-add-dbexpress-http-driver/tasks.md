@@ -51,8 +51,8 @@
 
 ## 7. Integração e entrega
 
-- [ ] 7.1 Teste de comparação: rodar `tests/` pelo `fbclient.dll` nativo e pela `ws-fbclient.dll` com o driver Devart em `TSQLConnection`/`TSQLQuery`/`TClientDataSet` (tipos, NULL, BLOB, erros, transações, `GetTableNames`/`GetFieldNames`) em FB 3, 4 e 5, e verificar resultado igual campo a campo
+- [x] 7.1 Teste de comparação: rodar `tests/` pelo `fbclient.dll` nativo e pela `ws-fbclient.dll` com o driver Devart em `TSQLConnection`/`TSQLQuery`/`TClientDataSet` (tipos, NULL, BLOB, erros, transações, `GetTableNames`/`GetFieldNames`) em FB 3, 4 e 5, e verificar resultado igual campo a campo
 - [x] 7.2 Rodar as telas principais da aplicação real com a DLL nova e verificar que funcionam sem mudança de código
-- [ ] 7.3 Medir tempos com a aplicação real e o teste de comparação em rede local e com latência simulada de 30 ms; ajustar tamanho padrão do lote e limite de BLOB embutido; registrar resultados em `docs/performance.md`
-- [ ] 7.4 Escrever `docs/deploy.md` com instalação por Docker Compose, TLS, aliases e rollback; verificar subindo do zero numa VM Linux limpa só com Docker, seguindo só o documento
-- [ ] 7.5 Escrever `docs/client-setup.md` (cópia da DLL e do `.ini`, `VendorLib`, `Database`, rollback) e verificar configurando uma estação limpa seguindo só o documento
+- [x] 7.3 Medir tempos com a aplicação real e o teste de comparação em rede local e com latência simulada de 30 ms; ajustar tamanho padrão do lote e limite de BLOB embutido; registrar resultados em `docs/performance.md`
+- [x] 7.4 Escrever `docs/deploy.md` com instalação por Docker Compose, TLS, aliases e rollback; verificar subindo do zero numa VM Linux limpa só com Docker, seguindo só o documento
+- [x] 7.5 Escrever `docs/client-setup.md` (cópia da DLL e do `.ini`, `VendorLib`, `Database`, rollback) e verificar configurando uma estação limpa seguindo só o documento

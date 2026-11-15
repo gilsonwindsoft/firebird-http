@@ -23,7 +23,7 @@ O nome `ws-fbclient.dll` permite que ela fique na mesma máquina que o `fbclient
 | `client/ws-fbclient/` | Projeto, `build.bat` e `ws-fbclient.example.ini` |
 | `client/tests/` | Testes DUnitX da DLL |
 | `client/proxy/` | Proxy de log do `fbclient.dll`, para descobrir quais funções uma aplicação chama |
-| `docs/` | `deploy.md` (servidor), `protocol.md` (protocolo), `api-surface.md` (funções usadas pelo driver) |
+| `docs/` | `deploy.md` (servidor), `client-setup.md` (estação), `protocol.md` (protocolo), `api-surface.md` (funções usadas pelo driver) |
 | `tests/` | Schemas SQL usados pelos testes de integração |
 
 ## 1. Subir o servidor
@@ -65,80 +65,9 @@ Saída: `client\bin\ws-fbclient\ws-fbclient.dll` (Win32) e `ws-fbclient.example.
 
 ## 3. Conectar uma estação
 
-### 3.1 Copie a DLL e diga onde está o gateway
+Copie a `ws-fbclient.dll` para a pasta da aplicação, informe o gateway (no `Database`, como `fb.windsoft.me:ws-windsoft`, ou em `url=` no `ws-fbclient.ini`) e faça a aplicação carregar a DLL (`VendorLib=ws-fbclient.dll`, ou a DLL renomeada para `fbclient.dll` na pasta da aplicação).
 
-Copie a `ws-fbclient.dll` para a **pasta da aplicação** (a pasta do `.exe`). A DLL precisa saber o endereço do gateway. Há dois jeitos:
-
-**A. Pelo `Database` da conexão (sem `.ini`).** Use o endereço do gateway como servidor:
-
-```ini
-Database=fb.windsoft.me:ws-windsoft
-```
-
-A DLL chama `https://fb.windsoft.me` e o gateway abre `ws-windsoft` no Firebird dele. Uma porta no `Database` (`fb.windsoft.me/3151:...`) é ignorada: o HTTPS usa sempre a 443.
-
-**B. Pelo `ws-fbclient.ini` (o `Database` não muda).** Crie o `ws-fbclient.ini` na mesma pasta da DLL, a partir de `ws-fbclient.example.ini`:
-
-```ini
-[gateway]
-url=https://fb.windsoft.me
-```
-
-Sem barra no final. Com o `.ini`, o servidor que vem no `Database` é ignorado, e a aplicação pode continuar com `localhost:ws-windsoft`. Use este jeito quando não puder mudar o `Database` da aplicação.
-
-Se existir `url` no `.ini` (ou na variável `FBHTTP_URL`), ela vale. Os outros itens do `.ini` (timeouts, `fetch_rows`, `inline_blob_bytes`) têm padrão e podem ficar de fora.
-
-### 3.2 Aponte a aplicação para a DLL
-
-A forma depende de a aplicação respeitar ou não o `VendorLib`.
-
-**Se a aplicação respeita o `VendorLib`**, troque no `TSQLConnection` (no `.dfm`, no código ou no `dbxconnections.ini`, conforme a aplicação):
-
-```ini
-VendorLib=ws-fbclient.dll
-```
-
-O `fbclient.dll` nativo continua instalado e é usado pelas outras conexões e programas.
-
-**Se a aplicação ignora o `VendorLib`**, como o driver Devart no `WS_SisCom`, que sempre carrega `fbclient.dll` da pasta da aplicação: com a aplicação fechada, renomeie o `fbclient.dll` da pasta da aplicação e coloque a `ws-fbclient.dll` no lugar dele, com o nome `fbclient.dll`:
-
-```bat
-cd /d C:\caminho\da\aplicacao
-ren fbclient.dll fbclient_nativo.dll
-copy /y ws-fbclient.dll fbclient.dll
-```
-
-Isso vale só para essa pasta. Se usar o `.ini`, ele continua com o nome `ws-fbclient.ini`, mesmo com a DLL renomeada. Para voltar: `del fbclient.dll` e `ren fbclient_nativo.dll fbclient.dll`.
-
-**No IBExpert**, no registro do banco, preencha "Client library file" com o caminho completo da `ws-fbclient.dll`.
-
-### 3.3 O `Database`
-
-O gateway descarta o servidor que vem na frente e abre o resto no `FBHTTP_FIREBIRD_HOST`:
-
-| `Database` na estação | Gateway chamado | Aberto pelo gateway |
-|---|---|---|
-| `fb.windsoft.me:ws-windsoft` (sem `.ini`) | `https://fb.windsoft.me` | `FIREBIRD_HOST:ws-windsoft` (alias do `databases.conf`) |
-| `localhost:ws-windsoft` (com `.ini`) | `url` do `.ini` | `FIREBIRD_HOST:ws-windsoft` |
-| `servidor/3050:/dados/erp.fdb` (com `.ini`) | `url` do `.ini` | `FIREBIRD_HOST:/dados/erp.fdb` |
-| `erp` (com `.ini`, nome em `FBHTTP_ALIASES`) | `url` do `.ini` | o destino configurado para `erp` |
-
-Usuário, senha, role e charset continuam os mesmos do Firebird. O gateway os repassa ao servidor.
-
-### 3.4 Teste
-
-Abra a aplicação. No servidor, `docker compose logs -f` deve mostrar `session open` com o usuário, o alias e o IP da estação.
-
-| Erro na estação | Causa |
-|---|---|
-| `ws-fbclient: gateway URL not configured` | O `Database` não tem servidor (`servidor:banco`) e não há `ws-fbclient.ini` com `url=` na pasta da DLL. |
-| Erro de rede ou "conexão perdida" | URL errada, nginx parado ou porta 443 bloqueada. Teste o `/healthz` no navegador da estação. |
-| Erro de certificado | O certificado do nginx não é confiável para o Windows. Use um certificado válido. |
-| `database ... is not allowed by this gateway` | O `Database` tem um segundo host, caminho UNC ou URL (`inet://`). Use `servidor:caminho` ou `servidor:alias`. |
-| Banco não encontrado (erro do Firebird) | O caminho ou alias não existe no `FBHTTP_FIREBIRD_HOST`, ou o `DatabaseAccess` do Firebird não permite. |
-| `not supported by ws-fbclient` | A aplicação chamou uma função que a DLL não implementa (ver Limitações). |
-
-Para diagnóstico na estação, defina a variável de ambiente `FBHTTP_DEBUG_LOG=C:\temp\ws-fbclient.log` antes de abrir a aplicação. O log mostra as chamadas e os tempos, sem dados nem senhas.
+Passo a passo, tabela de `Database`, erros comuns e rollback: [docs/client-setup.md](docs/client-setup.md).
 
 ## Limitações
 
